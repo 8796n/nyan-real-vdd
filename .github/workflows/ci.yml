@@ -18,7 +18,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 64-bit MSBuild: the WDK derives its tool paths from the build process's
+      # own architecture, and the 32-bit MSBuild makes it look for tools that
+      # only ship as x64 (stampinf, infverif) under x86.
       - uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
 
       # OutDir is pinned because a project built on its own puts its output
       # under the project directory, while the same project built through the
@@ -45,7 +50,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 64-bit MSBuild: the WDK derives its tool paths from the build process's
+      # own architecture, and the 32-bit MSBuild makes it look for tools that
+      # only ship as x64 (stampinf, infverif) under x86.
       - uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
 
       - uses: NuGet/setup-nuget@v2
 
