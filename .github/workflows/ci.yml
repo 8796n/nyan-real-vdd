@@ -65,6 +65,9 @@ jobs:
             Write-Host "found $tool"
           }
 
+      - name: Show resolved WDK paths
+        run: msbuild driver\nyanvdd.vcxproj /t:NyanShowWdkPaths /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=10.0.28000.0 /p:NyanShowWdkPaths=true /v:minimal /nologo
+
       # WindowsTargetPlatformVersion is pinned to the version the WDK package
       # carries: it otherwise defaults to the newest SDK *installed on the
       # machine*, and the package's tools (stampinf, Inf2Cat) only exist under
