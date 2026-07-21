@@ -52,6 +52,20 @@ scripts\sign-dev.ps1           # 自己署名（開発・配布）
 ただのコンソールプログラムとして実行できる（WDK もインストールも再起動も
 不要）。`scripts\build.ps1 -SkipTests` で省略可。
 
+## 別のマシンで試す
+
+```powershell
+scripts\package.ps1     # -> out\nyan-real-vdd-x64-<rev>.zip
+```
+
+zip を対象マシンへコピーして展開し、管理者 PowerShell で `.\install.ps1`。
+リポジトリも WDK もビルドも要らない。中身と注意点は同梱の `README.txt` に
+ある（自己署名証明書をそのマシンの信頼されたルートに入れる点を含む）。
+
+CI（GitHub Actions）はビルドとテストを検証し**未署名**の成果物を出す。
+署名鍵はローカルから出さないので、インストールできるパッケージは上記の
+`package.ps1` で作る。
+
 ## インストールと動作確認
 
 ```powershell
