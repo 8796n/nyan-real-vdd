@@ -1,0 +1,16 @@
+# build outputs
+out/
+x64/
+Debug/
+Release/
+*.log
+*.tlog
+
+# VS noise
+.vs/
+*.user
+*.vcxproj.filters.bak
+
+# packaging leftovers
+*.cer
+*.pfx

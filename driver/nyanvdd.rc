@@ -1,0 +1,30 @@
+#include <windows.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 0,1,0,0
+ PRODUCTVERSION 0,1,0,0
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_DRV
+ FILESUBTYPE VFT2_DRV_DISPLAY
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "nyan Real"
+            VALUE "FileDescription", "nyan Real Virtual Display Driver"
+            VALUE "FileVersion", "0.1.0.0"
+            VALUE "InternalName", "nyanvdd"
+            VALUE "LegalCopyright", "(c) nyan Real. MIT License."
+            VALUE "OriginalFilename", "nyanvdd.dll"
+            VALUE "ProductName", "nyan Real Spatial Wall"
+            VALUE "ProductVersion", "0.1.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

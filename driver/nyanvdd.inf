@@ -1,0 +1,80 @@
+;
+; nyanvdd.inf — nyan Real Virtual Display (IddCx indirect display driver)
+;
+; The device is root-enumerated software device created by the client
+; (nyanvddctl install-device / Spatial Wall) via SwDeviceCreate with
+; hardware id "NyanVDD". The Root\NyanVDD id is kept for manual
+; installs and debugging.
+;
+
+[Version]
+PnpLockDown=1
+Signature="$Windows NT$"
+ClassGUID = {4D36E968-E325-11CE-BFC1-08002BE10318}
+Class = Display
+ClassVer = 2.0
+Provider=%ManufacturerName%
+CatalogFile=nyanvdd.cat
+DriverVer=
+
+[Manufacturer]
+%ManufacturerName%=Standard,NT$ARCH$.10.0...19041
+
+[Standard.NT$ARCH$.10.0...19041]
+%DeviceName%=NyanVDD_Install, Root\NyanVDD
+%DeviceName%=NyanVDD_Install, NyanVDD
+
+[SourceDisksFiles]
+nyanvdd.dll=1
+
+[SourceDisksNames]
+1 = %DiskName%
+
+; =================== UMDF Device ==================================
+
+[NyanVDD_Install.NT]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT
+CopyFiles=UMDriverCopy
+
+[NyanVDD_Install.NT.hw]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.HW
+AddReg = NyanVDD_HardwareDeviceSettings
+
+[NyanVDD_HardwareDeviceSettings]
+HKR,, "UpperFilters",  %REG_MULTI_SZ%, "IndirectKmd"
+; Allow non-elevated clients (the Spatial Wall app) to open the control
+; interface: SYSTEM/Administrators full, Authenticated Users read+write.
+HKR,, "Security",, "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"
+HKR, "WUDF", "DeviceGroupId", %REG_SZ%, "NyanVddGroup"
+
+[NyanVDD_Install.NT.Services]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.Services
+
+[NyanVDD_Install.NT.Wdf]
+UmdfService=nyanvdd,NyanVDD_Install_UmdfService
+UmdfServiceOrder=nyanvdd
+UmdfKernelModeClientPolicy = AllowKernelModeClients
+
+[NyanVDD_Install_UmdfService]
+UmdfLibraryVersion=$UMDFVERSION$
+ServiceBinary=%12%\UMDF\nyanvdd.dll
+UmdfExtensions = IddCx0102
+
+[DestinationDirs]
+UMDriverCopy=12,UMDF
+
+[UMDriverCopy]
+nyanvdd.dll
+
+; =================== Generic ==================================
+
+[Strings]
+ManufacturerName="nyan Real"
+DiskName = "nyan Real Virtual Display Installation Disk"
+DeviceName="nyan Real Virtual Display Adapter"
+
+REG_MULTI_SZ  = 0x00010000
+REG_SZ        = 0x00000000
