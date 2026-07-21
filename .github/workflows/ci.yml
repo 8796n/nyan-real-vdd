@@ -20,19 +20,22 @@ jobs:
 
       - uses: microsoft/setup-msbuild@v2
 
+      # OutDir is pinned because a project built on its own puts its output
+      # under the project directory, while the same project built through the
+      # solution puts it at the repository root.
       - name: Build tests
-        run: msbuild tests\nyanvdd_tests.vcxproj /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
+        run: msbuild tests\nyanvdd_tests.vcxproj /p:Configuration=Release /p:Platform=x64 /p:OutDir=${{ github.workspace }}\ciout\ /v:minimal /nologo
 
       - name: Run tests
-        run: .\x64\Release\nyanvdd_tests.exe
+        run: ${{ github.workspace }}\ciout\nyanvdd_tests.exe
 
       - name: Build nyanvddctl
-        run: msbuild cli\nyanvddctl.vcxproj /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
+        run: msbuild cli\nyanvddctl.vcxproj /p:Configuration=Release /p:Platform=x64 /p:OutDir=${{ github.workspace }}\ciout\ /v:minimal /nologo
 
       - uses: actions/upload-artifact@v4
         with:
           name: nyanvddctl-x64
-          path: x64\Release\nyanvddctl.exe
+          path: ciout\nyanvddctl.exe
 
   # The driver needs the WDK, which the windows-2025 runner image no longer
   # ships; the supported way to get it in CI is the NuGet package.
@@ -49,8 +52,12 @@ jobs:
       - name: Restore WDK
         run: nuget restore packages.config -PackagesDirectory packages
 
+      # WindowsTargetPlatformVersion is pinned to the version the WDK package
+      # carries: it otherwise defaults to the newest SDK *installed on the
+      # machine*, and the package's tools (stampinf, Inf2Cat) only exist under
+      # its own version folder. SignMode=Off because no signing key exists here.
       - name: Build driver
-        run: msbuild driver\nyanvdd.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SignMode=Off /v:minimal /nologo
+        run: msbuild driver\nyanvdd.vcxproj /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=10.0.28000.0 /p:SignMode=Off /p:OutDir=${{ github.workspace }}\ciout\driver\ /v:minimal /nologo
 
       - name: Verify INF
         shell: pwsh
@@ -58,9 +65,12 @@ jobs:
           $infverif = Get-ChildItem -Path packages -Recurse -Filter infverif.exe |
             Select-Object -First 1
           if (-not $infverif) { throw 'infverif.exe not found in the restored WDK' }
+          $inf = Get-ChildItem -Path ciout -Recurse -Filter nyanvdd.inf | Select-Object -First 1
+          if (-not $inf) { throw 'nyanvdd.inf not found in the build output' }
+          Write-Host "verifying $($inf.FullName)"
           # /h enforces the rules attestation submission applies. /w (driver
           # package isolation) does not pass yet - see docs/design.ja.md.
-          & $infverif.FullName /h x64\Release\nyanvdd\nyanvdd.inf
+          & $infverif.FullName /h $inf.FullName
           if ($LASTEXITCODE -ne 0) { throw "infverif /h failed ($LASTEXITCODE)" }
 
       # Unsigned on purpose: the signing key stays on the developer's machine,
@@ -69,4 +79,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: nyanvdd-driver-x64-unsigned
-          path: x64\Release\nyanvdd\
+          path: ciout\driver\
