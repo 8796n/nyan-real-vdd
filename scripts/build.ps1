@@ -39,14 +39,14 @@ $PackageOut = Join-Path $OutDir 'package'
 New-Item -ItemType Directory -Force $PackageOut | Out-Null
 
 # The WDK build stages the driver package (inf + dll + cat) into a folder
-# named after the project under the build output directory.
-$PackageSrc = Join-Path $RepoRoot "driver\x64\$Configuration\nyanvdd"
+# named after the project under the solution-level output directory.
+$PackageSrc = Join-Path $RepoRoot "x64\$Configuration\nyanvdd"
 if (-not (Test-Path (Join-Path $PackageSrc 'nyanvdd.inf'))) {
     throw "driver package not found at $PackageSrc"
 }
 Copy-Item (Join-Path $PackageSrc '*') $PackageOut -Force
 
-Copy-Item (Join-Path $RepoRoot "cli\x64\$Configuration\nyanvddctl.exe") $OutDir -Force
+Copy-Item (Join-Path $RepoRoot "x64\$Configuration\nyanvddctl.exe") $OutDir -Force
 
 Write-Host ''
 Write-Host "OK: $PackageOut (driver package), $(Join-Path $OutDir 'nyanvddctl.exe')"
