@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The mode/EDID logic and the protocol header are deliberately free of WDK
+  # dependencies, so they can be verified on any Windows runner. This job is
+  # the fast signal on every push.
+  tests:
+    name: Unit tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build tests
+        run: msbuild tests\nyanvdd_tests.vcxproj /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
+
+      - name: Run tests
+        run: .\x64\Release\nyanvdd_tests.exe
+
+      - name: Build nyanvddctl
+        run: msbuild cli\nyanvddctl.vcxproj /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nyanvddctl-x64
+          path: x64\Release\nyanvddctl.exe
+
+  # The driver needs the WDK, which the windows-2025 runner image no longer
+  # ships; the supported way to get it in CI is the NuGet package.
+  driver:
+    name: Driver package (unsigned)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - uses: NuGet/setup-nuget@v2
+
+      - name: Restore WDK
+        run: nuget restore packages.config -PackagesDirectory packages
+
+      - name: Build driver
+        run: msbuild driver\nyanvdd.vcxproj /p:Configuration=Release /p:Platform=x64 /p:SignMode=Off /v:minimal /nologo
+
+      - name: Verify INF
+        shell: pwsh
+        run: |
+          $infverif = Get-ChildItem -Path packages -Recurse -Filter infverif.exe |
+            Select-Object -First 1
+          if (-not $infverif) { throw 'infverif.exe not found in the restored WDK' }
+          # /h enforces the rules attestation submission applies. /w (driver
+          # package isolation) does not pass yet - see docs/design.ja.md.
+          & $infverif.FullName /h x64\Release\nyanvdd\nyanvdd.inf
+          if ($LASTEXITCODE -ne 0) { throw "infverif /h failed ($LASTEXITCODE)" }
+
+      # Unsigned on purpose: the signing key stays on the developer's machine,
+      # so it never reaches a CI runner. Produce an installable package with
+      # scripts\package.ps1 locally instead of downloading this.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nyanvdd-driver-x64-unsigned
+          path: x64\Release\nyanvdd\
