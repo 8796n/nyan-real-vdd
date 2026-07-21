@@ -116,6 +116,7 @@ namespace nyan
             bool CopySlotByEdid(const void* Data, UINT32 Size, _Out_ MonitorSlot* SlotOut);
 
             UINT32 OsVersion() const { return m_OsVersion; }
+            bool Hdr10Ready() const { return (m_CapFlags & NYANVDD_CAP_HDR10_READY) != 0; }
 
             static IndirectDeviceContext* Get(WDFDEVICE Device);
 

@@ -38,6 +38,29 @@ void NyanVddLog(const wchar_t* Format, ...)
     va_end(Args);
     wcscat_s(Buf, L"\n");
     OutputDebugStringW(Buf);
+
+    // Also append to a plain-text log: the driver runs inside WUDFHost where
+    // OutputDebugString is awkward to capture in the field. Logging is rare
+    // (state changes only), so open/append/close per line is fine.
+    CreateDirectoryW(L"C:\\ProgramData\\nyan-real-vdd", nullptr);
+    HANDLE File = CreateFileW(L"C:\\ProgramData\\nyan-real-vdd\\driver.log",
+                              FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
+                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (File != INVALID_HANDLE_VALUE)
+    {
+        SYSTEMTIME Time;
+        GetLocalTime(&Time);
+        char Line[600];
+        int Length = sprintf_s(Line, "%04u-%02u-%02u %02u:%02u:%02u.%03u %ls",
+                               Time.wYear, Time.wMonth, Time.wDay, Time.wHour,
+                               Time.wMinute, Time.wSecond, Time.wMilliseconds, Buf);
+        if (Length > 0)
+        {
+            DWORD Written = 0;
+            WriteFile(File, Line, (DWORD)Length, &Written, nullptr);
+        }
+        CloseHandle(File);
+    }
 }
 
 #pragma endregion
@@ -174,6 +197,7 @@ EVT_IDD_CX_ADAPTER_COMMIT_MODES2 NyanVddAdapterCommitModes2;
 EVT_IDD_CX_PARSE_MONITOR_DESCRIPTION2 NyanVddParseMonitorDescription2;
 EVT_IDD_CX_MONITOR_QUERY_TARGET_MODES2 NyanVddMonitorQueryModes2;
 EVT_IDD_CX_MONITOR_SET_DEFAULT_HDR_METADATA NyanVddMonitorSetDefaultHdrMetaData;
+EVT_IDD_CX_ADAPTER_QUERY_TARGET_INFO NyanVddAdapterQueryTargetInfo;
 #endif
 
 struct IndirectDeviceContextWrapper
@@ -269,6 +293,7 @@ NTSTATUS NyanVddDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT pDeviceInit)
     IddConfig.EvtIddCxParseMonitorDescription2 = NyanVddParseMonitorDescription2;
     IddConfig.EvtIddCxMonitorQueryTargetModes2 = NyanVddMonitorQueryModes2;
     IddConfig.EvtIddCxMonitorSetDefaultHdrMetaData = NyanVddMonitorSetDefaultHdrMetaData;
+    IddConfig.EvtIddCxAdapterQueryTargetInfo = NyanVddAdapterQueryTargetInfo;
 #endif
 
     Status = IddCxDeviceInitConfig(pDeviceInit, &IddConfig);
@@ -560,14 +585,44 @@ void IndirectDeviceContext::InitAdapter()
     }
 #endif
 #if IDDCX_VERSION_MINOR >= 10
-    if (m_OsVersion >= NYANVDD_OS_1_10)
+    // HDR (FP16) is opt-in while experimental: on IddCx 1.11 (0x1B01) the OS
+    // rejects IddCxAdapterInitAsync with STATUS_INVALID_PARAMETER when
+    // IDDCX_ADAPTER_FLAGS_CAN_PROCESS_FP16 is declared without the rest of
+    // the HDR contract (likely the gamma-ramp / colorspace-transform
+    // support; *2 mode callbacks and QueryTargetInfo alone are not enough).
+    // Set HKLM\SOFTWARE\nyan-real-vdd\EnableFp16 = 1 (DWORD) to experiment.
+    DWORD EnableFp16 = 0;
+    DWORD Fp16ValueSize = sizeof(EnableFp16);
+    RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\nyan-real-vdd", L"EnableFp16",
+                 RRF_RT_REG_DWORD, nullptr, &EnableFp16, &Fp16ValueSize);
+    if (m_OsVersion >= NYANVDD_OS_1_10 && EnableFp16 != 0)
     {
-        // FP16 swap-chain surfaces are fine here (frames are discarded), and
-        // declaring it is what makes the OS light up the HDR path at all.
         AdapterCaps.Flags |= IDDCX_ADAPTER_FLAGS_CAN_PROCESS_FP16;
         m_CapFlags |= NYANVDD_CAP_HDR10_READY;
     }
 #endif
+
+    // Field-debug override: HKLM\SOFTWARE\nyan-real-vdd\DisableAdapterFlags
+    // (DWORD, bitmask of IDDCX_ADAPTER_FLAGS values) strips adapter flags at
+    // init time so feature/OS incompatibilities can be bisected without a
+    // rebuild. 0x20 = precise present regions, 0x40 = FP16 processing.
+    DWORD DisableFlags = 0;
+    DWORD ValueSize = sizeof(DisableFlags);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\nyan-real-vdd", L"DisableAdapterFlags",
+                     RRF_RT_REG_DWORD, nullptr, &DisableFlags, &ValueSize) == ERROR_SUCCESS &&
+        DisableFlags != 0)
+    {
+        AdapterCaps.Flags &= ~(IDDCX_ADAPTER_FLAGS)DisableFlags;
+        if (DisableFlags & 0x20)
+        {
+            m_CapFlags &= ~NYANVDD_CAP_PRECISE_DIRTY;
+        }
+        if (DisableFlags & 0x40)
+        {
+            m_CapFlags &= ~NYANVDD_CAP_HDR10_READY;
+        }
+        NYVDD_LOG(L"DisableAdapterFlags override: 0x%X", DisableFlags);
+    }
 
     WDF_OBJECT_ATTRIBUTES Attr;
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&Attr, IndirectDeviceContextWrapper);
@@ -579,6 +634,7 @@ void IndirectDeviceContext::InitAdapter()
 
     IDARG_OUT_ADAPTER_INIT AdapterInitOut;
     NTSTATUS Status = IddCxAdapterInitAsync(&AdapterInit, &AdapterInitOut);
+    NYVDD_LOG(L"IddCxAdapterInitAsync: 0x%08X (caps flags 0x%X)", Status, (UINT32)AdapterCaps.Flags);
 
     if (NT_SUCCESS(Status))
     {
@@ -586,10 +642,6 @@ void IndirectDeviceContext::InitAdapter()
 
         auto* pContext = WdfObjectGet_IndirectDeviceContextWrapper(AdapterInitOut.AdapterObject);
         pContext->pContext = this;
-    }
-    else
-    {
-        NYVDD_LOG(L"IddCxAdapterInitAsync failed: 0x%08X", Status);
     }
 }
 
@@ -1013,6 +1065,8 @@ static NTSTATUS ParseDescriptionCommon(
     *OutputCount = Count;
     *PreferredIdx = 0;
     *Hdr10 = Resolved && (Slot.Params.Flags & NYANVDD_PLUG_FLAG_HDR10) != 0;
+    NYVDD_LOG(L"ParseMonitorDescription: resolved=%d count=%u input=%u",
+              Resolved ? 1 : 0, Count, InputCount);
 
     if (InputCount < Count)
     {
@@ -1052,6 +1106,7 @@ NTSTATUS NyanVddMonitorGetDefaultModes(IDDCX_MONITOR MonitorObject, const IDARG_
 
     // All nyanvdd monitors carry an EDID, so this path is not expected; keep
     // it functional with the static table for robustness.
+    NYVDD_LOG(L"GetDefaultModes: input=%u", pInArgs->DefaultMonitorModeBufferInputCount);
     pOutArgs->DefaultMonitorModeBufferOutputCount = ARRAYSIZE(kModeTable);
     if (pInArgs->DefaultMonitorModeBufferInputCount == 0)
     {
@@ -1077,6 +1132,7 @@ NTSTATUS NyanVddMonitorQueryModes(IDDCX_MONITOR MonitorObject, const IDARG_IN_QU
 
     // Target modes describe the device's processing capability; report the
     // full static table (the OS intersects them with the monitor modes).
+    NYVDD_LOG(L"QueryTargetModes: input=%u", pInArgs->TargetModeBufferInputCount);
     pOutArgs->TargetModeBufferOutputCount = ARRAYSIZE(kModeTable);
     if (pInArgs->TargetModeBufferInputCount >= ARRAYSIZE(kModeTable))
     {
@@ -1124,6 +1180,18 @@ NTSTATUS NyanVddParseMonitorDescription2(const IDARG_IN_PARSEMONITORDESCRIPTION2
 }
 
 _Use_decl_annotations_
+NTSTATUS NyanVddAdapterQueryTargetInfo(IDDCX_ADAPTER AdapterObject, IDARG_IN_QUERYTARGET_INFO* pInArgs, IDARG_OUT_QUERYTARGET_INFO* pOutArgs)
+{
+    UNREFERENCED_PARAMETER(AdapterObject);
+    UNREFERENCED_PARAMETER(pInArgs);
+    // There is no physical wire: claim full color-space handling (pixels are
+    // never transported, so "handling" is trivially true) and no dithering.
+    pOutArgs->TargetCaps = IDDCX_TARGET_CAPS_WIDE_COLOR_SPACE | IDDCX_TARGET_CAPS_HIGH_COLOR_SPACE;
+    pOutArgs->DitheringSupport = {};
+    return STATUS_SUCCESS;
+}
+
+_Use_decl_annotations_
 NTSTATUS NyanVddMonitorSetDefaultHdrMetaData(IDDCX_MONITOR MonitorObject, const IDARG_IN_MONITOR_SET_DEFAULT_HDR_METADATA* pInArgs)
 {
     UNREFERENCED_PARAMETER(MonitorObject);
@@ -1138,12 +1206,16 @@ NTSTATUS NyanVddMonitorQueryModes2(IDDCX_MONITOR MonitorObject, const IDARG_IN_Q
 {
     UNREFERENCED_PARAMETER(MonitorObject);
 
+    // 10-bit wire support may only be claimed while the adapter declared
+    // FP16 processing — reporting it without that is rejected at arrival.
+    const bool Hdr10 = g_DeviceContext && g_DeviceContext->Hdr10Ready();
+    NYVDD_LOG(L"QueryTargetModes2: input=%u hdr10=%d", pInArgs->TargetModeBufferInputCount, Hdr10 ? 1 : 0);
     pOutArgs->TargetModeBufferOutputCount = ARRAYSIZE(kModeTable);
     if (pInArgs->TargetModeBufferInputCount >= ARRAYSIZE(kModeTable))
     {
         for (UINT32 i = 0; i < ARRAYSIZE(kModeTable); ++i)
         {
-            pInArgs->pTargetModes[i] = CreateIddCxTargetMode2(kModeTable[i], true);
+            pInArgs->pTargetModes[i] = CreateIddCxTargetMode2(kModeTable[i], Hdr10);
         }
     }
     return STATUS_SUCCESS;

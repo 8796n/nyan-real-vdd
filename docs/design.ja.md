@@ -37,15 +37,23 @@
 孤児掃除はクライアント起動時のリコンサイルが本線:
 `LIST → 自分の管理表にない cookie を UNPLUG`。
 
-## HDR10 の現状（準備あり・既定 SDR）
+## HDR10 の現状（準備あり・既定 SDR・FP16 はオプトイン）
 
 - a01+ / RayNeo Air 4 Pro など HDR10 パネル対応が動機。
-- 現状: `NYANVDD_PLUG_FLAG_HDR10` を付けて plug すると、OS が IddCx 1.10+ の
-  場合にモニターモードへ 10bpc（`IDDCX_BITS_PER_COMPONENT_8|_10`）を報告。
-  それ以外は常時 8bpc。
-- 未実装（次の一手）: `EvtIddCxMonitorSetDefaultHdrMetaData` の登録、EDID への
-  HDR static metadata（CTA-861 拡張ブロック）、FP16 スワップチェーン処理の
-  実機検証。「Use HDR」トグルが出るところまでは実機で要確認。
+- **2026-07-21 実機知見（IddCx 1.11 = 0x1B01, Z390）**:
+  - `IDDCX_ADAPTER_FLAGS_CAN_PROCESS_FP16` を宣言すると
+    `IddCxAdapterInitAsync` が `STATUS_INVALID_PARAMETER` で拒否される。
+    *2 コールバック一式 + `EvtIddCxAdapterQueryTargetInfo` +
+    `EvtIddCxMonitorSetDefaultHdrMetaData` を登録しても不足
+    （本命疑い = ガンマランプ / 3x4 色空間変換サポート）。
+  - **bpc 報告は FP16 宣言と厳密整合が必要**: FP16 未宣言のまま
+    `IDDCX_TARGET_MODE2` に 10bpc を報告すると `IddCxMonitorArrival` が
+    `STATUS_INVALID_PARAMETER` で落ちる（発見に時間を要した罠）。
+- 現状の既定: 常時 8bpc（SDR）。FP16 実験は
+  `HKLM\SOFTWARE\nyan-real-vdd\EnableFp16 = 1`（DWORD）でオプトイン。
+  汎用の切り分けノブとして `DisableAdapterFlags`（bitmask）もある。
+- 次の一手: `EvtIddCxMonitorSetGammaRamp`（3x4 colorspace transform）実装 →
+  FP16 既定有効化 → `--hdr` plug で「HDR を使用する」トグル確認。
 
 ## スワップチェーン処理
 
@@ -54,13 +62,25 @@
 しない。GPU コストは実質ゼロ。MMCSS "Distribution" + （1.9+）realtime GPU
 priority で遅延源にならないようにする。
 
-## 実機検証チェックリスト（未消化）
+## 実機検証チェックリスト
 
-- [ ] Win11 で plug/unplug/list/status/watchdog の一巡
-- [ ] EDID がレジストリから読めて serial = cookie になっている（`NW-XXXXXXXX`）
+2026-07-21 消化分（Z390 / Win11 IddCx 1.11 = 0x1B01）:
+
+- [x] インストール（証明書信頼 + pnputil + devnode）→ `status` 応答
+- [x] plug/unplug/list/status の一巡（1920x1080@120, cookie 0xC0FFEE01）
+- [x] EDID 相関: PnP `DISPLAY\NYN3D0F\...`、WMI で mfr=NYN /
+      name="nyan Wall" / serial=`NW-C0FFEE01` を確認
+- [x] `rt-gpu-priority` 点灯（スワップチェーン割当後に
+      `IddCxSetRealtimeGPUPriority` 成功）+ `precise-dirty` 点灯
+- [x] unplug all で PnP からも即時消滅
+
+未消化:
+
+- [ ] watchdog の発火と自動解除
+- [ ] 非管理者での制御チャネル open（今回の一巡は昇格済みシェル併用）
 - [ ] plug→即 kill→再起動→リコンサイルでゴーストが出ない
 - [ ] メガネ挿抜のトポロジストール中にモニターが消えない（ParsecVDD 比較）
-- [ ] `--hdr` plug で 24H2 の「HDR を使用する」が出るか（出なければ metadata 実装へ）
+- [ ] 選択中モードが preferred (@120Hz) になっているかの目視
+- [ ] `EnableFp16=1` + gamma ramp 実装後に「HDR を使用する」が出るか
 - [ ] Win10 19041 実機（または VM）で 1.5 フロア動作
-- [ ] 非管理者での制御チャネル open（INF の SDDL が効いているか）
 - [ ] スリープ/復帰でモニター構成が保持されるか
