@@ -5,9 +5,10 @@
 // (SwDeviceCreate) used by scripts/install.ps1.
 
 #include <windows.h>
-#include <winioctl.h>
+#include <initguid.h>
 #include <swdevice.h>
 #include <cfgmgr32.h>
+#include <devpkey.h>
 
 #include <cstdio>
 #include <cwchar>
@@ -19,6 +20,7 @@
 
 #pragma comment(lib, "swdevice.lib")
 #pragma comment(lib, "cfgmgr32.lib")
+#pragma comment(lib, "user32.lib")
 
 namespace
 {
@@ -36,7 +38,8 @@ namespace
             L"  nyanvddctl plug [WxH@Hz] [--hdr] [--cookie N]\n"
             L"                                   plug a monitor (default 1920x1080@60)\n"
             L"  nyanvddctl unplug <cookie|all>   unplug one monitor (hex ok: 0x...) or all\n"
-            L"  nyanvddctl watchdog <ms|off>     arm/disarm the liveness watchdog (>=10000)\n");
+            L"  nyanvddctl watchdog <ms|off>     arm/disarm the liveness watchdog (>=10000)\n"
+            L"  nyanvddctl resolve               map each cookie to its OS display\n");
     }
 
     // ---- device node management (SwDeviceCreate) ----
@@ -159,7 +162,208 @@ namespace
         return true;
     }
 
+    // ---- cookie -> OS display correlation ----
+    //
+    // Reference implementation of the recipe documented in
+    // include/nyanvdd_protocol.h. Everything here works without elevation.
+
+    // "\\?\DISPLAY#NYN3D0F#1&37a367&0&UID256#{e6f07b5f-...}"
+    //   -> "DISPLAY\NYN3D0F\1&37a367&0&UID256"
+    std::wstring InstanceIdFromDevicePath(const wchar_t* DevicePath)
+    {
+        std::wstring Id = DevicePath;
+        if (Id.rfind(L"\\\\?\\", 0) == 0)
+        {
+            Id.erase(0, 4);
+        }
+        const size_t Brace = Id.rfind(L'#');
+        if (Brace != std::wstring::npos && Brace + 1 < Id.size() && Id[Brace + 1] == L'{')
+        {
+            Id.erase(Brace);
+        }
+        for (wchar_t& C : Id)
+        {
+            if (C == L'#') C = L'\\';
+        }
+        return Id;
+    }
+
+    // Step 4+5 of the recipe: device instance -> container id -> cookie.
+    UINT32 CookieFromInstanceId(const std::wstring& InstanceId)
+    {
+        DEVINST DevInst = 0;
+        if (CM_Locate_DevNodeW(&DevInst, const_cast<DEVINSTID_W>(InstanceId.c_str()),
+                               CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS)
+        {
+            return 0;
+        }
+
+        GUID ContainerId = {};
+        DEVPROPTYPE Type = 0;
+        ULONG Size = sizeof(ContainerId);
+        if (CM_Get_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ContainerId, &Type,
+                                     (PBYTE)&ContainerId, &Size, 0) != CR_SUCCESS)
+        {
+            return 0;
+        }
+        if (Type != DEVPROP_TYPE_GUID)
+        {
+            return 0;
+        }
+        return NyanVddCookieFromContainerId(&ContainerId);
+    }
+
+    struct ResolvedDisplay
+    {
+        UINT32 Cookie;
+        std::wstring GdiName;      // "\\.\DISPLAY3"
+        std::wstring FriendlyName;
+        UINT32 Width, Height, RefreshHz;
+        int PosX, PosY;
+    };
+
+    bool ResolveDisplays(std::vector<ResolvedDisplay>& Out)
+    {
+        UINT32 PathCount = 0, ModeCount = 0;
+        if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &PathCount, &ModeCount) != ERROR_SUCCESS)
+        {
+            return false;
+        }
+
+        std::vector<DISPLAYCONFIG_PATH_INFO> Paths(PathCount);
+        std::vector<DISPLAYCONFIG_MODE_INFO> Modes(ModeCount);
+        if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &PathCount, Paths.data(),
+                               &ModeCount, Modes.data(), nullptr) != ERROR_SUCCESS)
+        {
+            return false;
+        }
+        Paths.resize(PathCount);
+
+        for (const DISPLAYCONFIG_PATH_INFO& Path : Paths)
+        {
+            DISPLAYCONFIG_TARGET_DEVICE_NAME Target = {};
+            Target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+            Target.header.size = sizeof(Target);
+            Target.header.adapterId = Path.targetInfo.adapterId;
+            Target.header.id = Path.targetInfo.id;
+            if (DisplayConfigGetDeviceInfo(&Target.header) != ERROR_SUCCESS)
+            {
+                continue;
+            }
+
+            // Cheap pre-filter; the container id below is what actually decides.
+            if (Target.edidManufactureId != NYANVDD_EDID_MANUFACTURE_ID ||
+                Target.edidProductCodeId != NYANVDD_EDID_PRODUCT_CODE_ID)
+            {
+                continue;
+            }
+
+            const UINT32 Cookie = CookieFromInstanceId(
+                InstanceIdFromDevicePath(Target.monitorDevicePath));
+            if (Cookie == 0)
+            {
+                continue;
+            }
+
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME Source = {};
+            Source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            Source.header.size = sizeof(Source);
+            Source.header.adapterId = Path.sourceInfo.adapterId;
+            Source.header.id = Path.sourceInfo.id;
+            if (DisplayConfigGetDeviceInfo(&Source.header) != ERROR_SUCCESS)
+            {
+                continue;
+            }
+
+            ResolvedDisplay Display = {};
+            Display.Cookie = Cookie;
+            Display.GdiName = Source.viewGdiDeviceName;
+            Display.FriendlyName = Target.monitorFriendlyDeviceName;
+
+            DEVMODEW Mode = {};
+            Mode.dmSize = sizeof(Mode);
+            if (EnumDisplaySettingsExW(Source.viewGdiDeviceName, ENUM_CURRENT_SETTINGS, &Mode, 0))
+            {
+                Display.Width = Mode.dmPelsWidth;
+                Display.Height = Mode.dmPelsHeight;
+                Display.RefreshHz = Mode.dmDisplayFrequency;
+                Display.PosX = Mode.dmPosition.x;
+                Display.PosY = Mode.dmPosition.y;
+            }
+            Out.push_back(Display);
+        }
+        return true;
+    }
+
     // ---- commands ----
+
+    int CmdResolve(HANDLE Device)
+    {
+        NYANVDD_LIST_OUT List = {};
+        if (!Ioctl(Device, IOCTL_NYANVDD_LIST, nullptr, 0, &List, sizeof(List)))
+        {
+            return 1;
+        }
+
+        std::vector<ResolvedDisplay> Displays;
+        if (!ResolveDisplays(Displays))
+        {
+            fwprintf(stderr, L"QueryDisplayConfig failed\n");
+            return 1;
+        }
+
+        if (List.Count == 0)
+        {
+            wprintf(L"no monitors plugged\n");
+            return 0;
+        }
+
+        int Missing = 0;
+        for (UINT32 i = 0; i < List.Count; ++i)
+        {
+            const NYANVDD_MONITOR_INFO& M = List.Monitors[i];
+            const ResolvedDisplay* Found = nullptr;
+            for (const ResolvedDisplay& D : Displays)
+            {
+                if (D.Cookie == M.Cookie) { Found = &D; break; }
+            }
+
+            if (Found)
+            {
+                wprintf(L"cookie 0x%08X -> %s  %ux%u@%u at (%d,%d)  \"%s\"\n",
+                        M.Cookie, Found->GdiName.c_str(),
+                        Found->Width, Found->Height, Found->RefreshHz,
+                        Found->PosX, Found->PosY, Found->FriendlyName.c_str());
+                if (Found->Width != M.Width || Found->Height != M.Height)
+                {
+                    wprintf(L"    note: plugged as %ux%u@%u\n", M.Width, M.Height, M.RefreshHz);
+                }
+            }
+            else
+            {
+                // Expected briefly right after PLUG: the topology change is
+                // asynchronous. Persisting means the monitor is not attached.
+                wprintf(L"cookie 0x%08X -> (not in the active display topology yet)\n", M.Cookie);
+                ++Missing;
+            }
+        }
+
+        for (const ResolvedDisplay& D : Displays)
+        {
+            bool Known = false;
+            for (UINT32 i = 0; i < List.Count; ++i)
+            {
+                if (List.Monitors[i].Cookie == D.Cookie) { Known = true; break; }
+            }
+            if (!Known)
+            {
+                wprintf(L"%s -> cookie 0x%08X is not in this driver's list (orphan?)\n",
+                        D.GdiName.c_str(), D.Cookie);
+            }
+        }
+
+        return Missing == 0 ? 0 : 2;
+    }
 
     int CmdStatus(HANDLE Device)
     {
@@ -172,6 +376,11 @@ namespace
         wprintf(L"driver     : %u.%u\n", Status.DriverVersion >> 16, Status.DriverVersion & 0xFFFF);
         wprintf(L"os iddcx   : 0x%04X\n", Status.IddCxOsVersion);
         wprintf(L"monitors   : %u / %u\n", Status.MonitorCount, Status.MaxMonitors);
+        const wchar_t* State =
+            Status.AdapterState == NYANVDD_ADAPTER_STATE_READY ? L"ready" :
+            Status.AdapterState == NYANVDD_ADAPTER_STATE_FAILED ? L"FAILED (IddCx refused the adapter)" :
+            L"starting";
+        wprintf(L"adapter    : %s\n", State);
         wprintf(L"caps       :%s%s%s%s\n",
                 (Status.CapFlags & NYANVDD_CAP_HDR10_READY) ? L" hdr10-ready" : L"",
                 (Status.CapFlags & NYANVDD_CAP_RT_GPU_PRIORITY) ? L" rt-gpu-priority" : L"",
@@ -321,6 +530,27 @@ int wmain(int argc, wchar_t** argv)
         return 1;
     }
 
+    // The protocol requires every client to check the version before issuing
+    // anything else; a driver that speaks a version we do not know may have
+    // moved fields under us.
+    {
+        NYANVDD_STATUS_OUT Probe = {};
+        if (!Ioctl(Device, IOCTL_NYANVDD_GET_STATUS, nullptr, 0, &Probe, sizeof(Probe)))
+        {
+            CloseHandle(Device);
+            return 1;
+        }
+        if (Probe.ProtocolVersion != NYANVDD_PROTOCOL_VERSION)
+        {
+            fwprintf(stderr,
+                     L"protocol mismatch: driver speaks v%u, this tool speaks v%u.\n"
+                     L"Reinstall the driver and the tool from the same build.\n",
+                     Probe.ProtocolVersion, (UINT32)NYANVDD_PROTOCOL_VERSION);
+            CloseHandle(Device);
+            return 1;
+        }
+    }
+
     int Result = 2;
     if (wcscmp(Cmd, L"status") == 0)
     {
@@ -329,6 +559,10 @@ int wmain(int argc, wchar_t** argv)
     else if (wcscmp(Cmd, L"list") == 0)
     {
         Result = CmdList(Device);
+    }
+    else if (wcscmp(Cmd, L"resolve") == 0)
+    {
+        Result = CmdResolve(Device);
     }
     else if (wcscmp(Cmd, L"plug") == 0)
     {

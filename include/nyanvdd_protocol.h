@@ -4,8 +4,9 @@
 // nyanvdd driver and its clients (Spatial Wall, nyanvddctl, third parties).
 // It is self-contained C: copy it verbatim into consuming projects.
 //
-// Requires <windows.h> and <winioctl.h> (for CTL_CODE) to be included first
-// in user mode. The driver includes it after the WDK headers.
+// Include <windows.h> before this header in user mode; it pulls in
+// <winioctl.h> itself for CTL_CODE. The driver includes it after the WDK
+// headers.
 //
 // Versioning rules:
 //  - Any layout or semantic change bumps NYANVDD_PROTOCOL_VERSION.
@@ -26,11 +27,20 @@
 #ifndef NYANVDD_PROTOCOL_H
 #define NYANVDD_PROTOCOL_H
 
-#ifdef __cplusplus
-extern "C" {
+#if !defined(CTL_CODE)
+#include <winioctl.h>
 #endif
 
-#define NYANVDD_PROTOCOL_VERSION 1
+#ifdef __cplusplus
+extern "C" {
+#define NYANVDD_INLINE inline
+#else
+#define NYANVDD_INLINE __inline
+#endif
+
+// v2: NYANVDD_STATUS_OUT.Reserved became AdapterState (layout unchanged), and
+//     the container-id correlation helpers below became part of the contract.
+#define NYANVDD_PROTOCOL_VERSION 2
 
 // Device interface exposed by the driver. Enumerate with
 // CM_Get_Device_Interface_ListW and open with CreateFileW
@@ -48,6 +58,77 @@ extern "C" {
 // Manufacturer "NYN", product code 0x3D0F, serial = plug cookie.
 #define NYANVDD_EDID_VENDOR       "NYN"
 #define NYANVDD_EDID_PRODUCT_CODE 0x3D0F
+
+// The same identity as DISPLAYCONFIG_TARGET_DEVICE_NAME reports it, for use
+// as a cheap pre-filter over QueryDisplayConfig results.
+#define NYANVDD_EDID_MANUFACTURE_ID  0x2E3B
+#define NYANVDD_EDID_PRODUCT_CODE_ID 0x3D0F
+
+// ---------------------------------------------------------------------------
+// Correlating a cookie with an OS display
+//
+// Each monitor's container id is derived from its plug cookie, so a client can
+// map either direction without parsing EDID blobs. Recipe, all non-privileged:
+//
+//   1. GetDisplayConfigBufferSizes + QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS)
+//   2. per path: DisplayConfigGetDeviceInfo(DISPLAYCONFIG_TARGET_DEVICE_NAME)
+//      -> monitorDevicePath, e.g.
+//         \\?\DISPLAY#NYN3D0F#1&37a367&0&UID256#{e6f07b5f-...}
+//      (optionally skip non-ours early via edidManufactureId /
+//       edidProductCodeId against the two constants above)
+//   3. turn that path into a device instance id: drop the leading "\\?\",
+//      drop the trailing "#{...}", replace '#' with '\'
+//   4. CM_Locate_DevNodeW + CM_Get_DevNode_PropertyW(DEVPKEY_Device_ContainerId)
+//   5. NyanVddCookieFromContainerId() -> the cookie, or 0 if not ours
+//   6. same path's adapterId/sourceId + DISPLAYCONFIG_SOURCE_DEVICE_NAME ->
+//      viewGdiDeviceName ("\\.\DISPLAY3"), which EnumDisplaySettingsEx and
+//      EnumDisplayMonitors accept.
+//
+// cli/nyanvddctl.cpp implements exactly this ("nyanvddctl resolve") and is
+// meant to be read as the reference implementation.
+//
+// TIMING: a successful PLUG means the monitor arrival was accepted, not that
+// the OS has finished applying the new topology. The display will not appear
+// in QueryDisplayConfig / EnumDisplayDevices for a short while afterwards.
+// Subscribe to WM_DISPLAYCHANGE (or CM_Register_Notification on
+// GUID_DEVINTERFACE_MONITOR) before calling PLUG, or poll the lookup above
+// with a timeout; do not assume the display exists the instant PLUG returns.
+// ---------------------------------------------------------------------------
+
+// {408B3FE4-8AC2-4E97-83D8-BE29xxxxxxxx} — the low 4 bytes carry the cookie.
+#define NYANVDD_CONTAINER_ID_BASE \
+    { 0x408B3FE4, 0x8AC2, 0x4E97, { 0x83, 0xD8, 0xBE, 0x29, 0x00, 0x00, 0x00, 0x00 } }
+
+NYANVDD_INLINE void NyanVddMakeContainerId(UINT32 Cookie, GUID* ContainerId)
+{
+    const GUID NyanVddBase = NYANVDD_CONTAINER_ID_BASE;
+    *ContainerId = NyanVddBase;
+    ContainerId->Data4[4] = (unsigned char)(Cookie & 0xFF);
+    ContainerId->Data4[5] = (unsigned char)((Cookie >> 8) & 0xFF);
+    ContainerId->Data4[6] = (unsigned char)((Cookie >> 16) & 0xFF);
+    ContainerId->Data4[7] = (unsigned char)((Cookie >> 24) & 0xFF);
+}
+
+// Returns 0 if the container id does not belong to this driver.
+NYANVDD_INLINE UINT32 NyanVddCookieFromContainerId(const GUID* ContainerId)
+{
+    const GUID NyanVddBase = NYANVDD_CONTAINER_ID_BASE;
+    int i;
+    if (ContainerId->Data1 != NyanVddBase.Data1 ||
+        ContainerId->Data2 != NyanVddBase.Data2 ||
+        ContainerId->Data3 != NyanVddBase.Data3)
+    {
+        return 0;
+    }
+    for (i = 0; i < 4; ++i)
+    {
+        if (ContainerId->Data4[i] != NyanVddBase.Data4[i]) return 0;
+    }
+    return ((UINT32)ContainerId->Data4[4]) |
+           ((UINT32)ContainerId->Data4[5] << 8) |
+           ((UINT32)ContainerId->Data4[6] << 16) |
+           ((UINT32)ContainerId->Data4[7] << 24);
+}
 
 #define NYANVDD_MAX_MONITORS 4
 
@@ -68,6 +149,13 @@ extern "C" {
 #define NYANVDD_CAP_RT_GPU_PRIORITY 0x00000002u // OS IddCx >= 1.9: realtime GPU priority applied
 #define NYANVDD_CAP_PRECISE_DIRTY   0x00000004u // OS IddCx >= 1.8: precise present regions requested
 
+// AdapterState: PLUG returns ERROR_NOT_READY both while the adapter is still
+// coming up and when it failed for good, so this is how a client tells a race
+// at startup (retry) from a broken driver (report it and stop retrying).
+#define NYANVDD_ADAPTER_STATE_STARTING 0 // initializing; PLUG may fail, retry
+#define NYANVDD_ADAPTER_STATE_READY    1 // monitors can be plugged
+#define NYANVDD_ADAPTER_STATE_FAILED   2 // IddCx refused the adapter; permanent
+
 typedef struct NYANVDD_STATUS_OUT {
     UINT32 ProtocolVersion; // NYANVDD_PROTOCOL_VERSION of the driver build
     UINT32 DriverVersion;   // packed: (major << 16) | minor
@@ -76,7 +164,7 @@ typedef struct NYANVDD_STATUS_OUT {
     UINT32 CapFlags;        // NYANVDD_CAP_*
     UINT32 MonitorCount;    // currently plugged monitors
     UINT32 WatchdogTimeoutMs; // 0 = watchdog disarmed
-    UINT32 Reserved;
+    UINT32 AdapterState;    // NYANVDD_ADAPTER_STATE_* (was Reserved in v1)
 } NYANVDD_STATUS_OUT;
 
 // Plug flags.
@@ -143,9 +231,15 @@ typedef struct NYANVDD_WATCHDOG_IN {
 // Win32 error mapping of driver-side failures (via NTSTATUS):
 //  - plug with duplicate cookie      -> ERROR_ALREADY_EXISTS
 //  - plug with no free connector     -> ERROR_NO_SYSTEM_RESOURCES
-//  - plug/unplug before adapter up   -> ERROR_NOT_READY
+//  - plug before the adapter is up   -> ERROR_NOT_READY (see AdapterState:
+//                                       STARTING means retry, FAILED does not)
+//  - plug of an undescribable mode   -> ERROR_INVALID_PARAMETER (see the
+//                                       accepted range above)
+//  - plug racing an unplug           -> ERROR_OPERATION_ABORTED (retry)
 //  - unknown cookie on unplug        -> ERROR_NOT_FOUND
 //  - malformed parameters            -> ERROR_INVALID_PARAMETER
+// UNPLUG does not check the adapter state, and unplugging everything
+// (Cookie = 0) succeeds even when nothing is plugged.
 
 #ifdef __cplusplus
 }

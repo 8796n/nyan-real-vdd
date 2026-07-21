@@ -14,11 +14,13 @@
 ## IddCx バージョン戦略
 
 - **ビルド**: 1.10 ヘッダ（`NyanIddCxMinor=10`）+ `IDDCX_MINIMUM_VERSION_REQUIRED=10`。
-- **対応 OS: Windows 11 24H2 (26100) 以上**（2026-07-21 決定）。施行点は INF の
-  decoration `10.0...26100`。理由 = Windows 10 は 2025-10 で EOL、Win11 23H2
-  以前もコンシューマ向けは EOL 済みで、古いフロアは「未検証の負債」にしか
-  ならない。※もし 24H2 未満の実機を支えたくなったら decoration を `22631`
-  等へ下げるだけ（コードのランタイムゲートは残してある）。
+- **対応 OS: Windows 11 24H2 (26100) 以上**（2026-07-21 決定）。理由 =
+  Windows 10 は 2025-10 で EOL、Win11 23H2 以前もコンシューマ向けは EOL 済みで、
+  古いフロアは「未検証の負債」にしかならない。
+- 施行点は**2箇所**: INF の decoration `10.0...26100`（バインドを制限）と
+  `IDDCX_MINIMUM_VERSION_REQUIRED=10`（**フレームワークのロード時ゲート**）。
+  ※24H2 未満を支えたくなったら**両方**下げる必要がある。decoration だけでは
+  ドライバがロードできない。
 - *1 系コールバックはフロア 1.10 では呼ばれないが、共通実装の薄いラッパー
   なので登録したまま残す（フロアを下げる時の保険 + 登録必須検証への安全策）。
 - 実行時に `IddCxGetVersion` で判定して段階的に有効化:
@@ -42,6 +44,45 @@
 
 孤児掃除はクライアント起動時のリコンサイルが本線:
 `LIST → 自分の管理表にない cookie を UNPLUG`。
+
+## cookie → OS ディスプレイの逆引き（設計の売りの実装）
+
+cookie 相関は**モニターの ContainerId に cookie を埋める**ことで成立している
+（`{408B3FE4-8AC2-4E97-83D8-BE29xxxxxxxx}` の下位4バイト、リトルエンディアン）。
+EDID を読み直す必要はなく、非管理者で引ける。手順とヘルパは
+`include/nyanvdd_protocol.h` に公開契約として置き、**動く参照実装が
+`nyanvddctl resolve`**（QueryDisplayConfig → TARGET_DEVICE_NAME →
+CM_Get_DevNode_PropertyW(ContainerId) → SOURCE_DEVICE_NAME → GDI名）。
+
+2026-07-22 実機確認（3枚同時）:
+```
+cookie 0xAAAA0001 -> \\.\DISPLAY257  1920x1200@60 at (3840,0)
+cookie 0xBBBB0002 -> \\.\DISPLAY258  2560x1440@90 at (5760,0)
+cookie 0xCCCC0003 -> \\.\DISPLAY259  1280x720@60  at (8320,0)
+```
+
+**注意**: PLUG の成功は monitor arrival の受理までで、OS のトポロジ適用は
+非同期。plug 直後の列挙は空振りしうる（実測では即時でも引けたが保証はない）。
+クライアントは WM_DISPLAYCHANGE か CM_Register_Notification を先に張るか、
+タイムアウト付きでポーリングすること。ヘッダにも明記した。
+
+## アダプタ初期化の失敗（恒久死の回避）
+
+`IddCxAdapterInitAsync` は宣言したケイパビリティ次第で失敗する（実例:
+IddCx 1.11 で `CAN_PROCESS_FP16`）。以前は失敗すると `m_AdapterReady` が
+false のまま放置され、デバイスは「正常動作中」に見えるのに以後すべての PLUG が
+NOT_READY を返す**恒久死**になっていた（FP16 デバッグで実際に踏んだ）。
+
+現在は**オプション機能を段階的に落として再試行**する。実機ログ:
+```
+attempt 0: 0xC000000D (caps flags 0x60)   ← FP16込みで拒否
+attempt 1: 0x00000000 (caps flags 0x20)   ← FP16を落として成功
+Adapter came up with reduced capabilities (0x60 requested, 0x20 accepted)
+```
+成功した組み合わせに合わせて `CapFlags` も落とすので、status は実態を映す。
+全滅した場合はデバイスを生かしたまま `AdapterState = FAILED` にする
+（制御インターフェースを残してクライアントが理由を読めるようにするため。
+デバイスを落とすと Device Manager に黄色ビックリが出るだけで理由が残らない）。
 
 ## HDR10 の現状（準備あり・既定 SDR・FP16 はオプトイン）
 
@@ -123,8 +164,13 @@ priority で遅延源にならないようにする。
 - [x] 表現できないモードの拒否（4K@240 / 8K@60 が ERROR_INVALID_PARAMETER）
 - [x] ユニットテスト 914 件（`scripts/build.ps1` が毎回実行）
 
+- [x] cookie → OS ディスプレイ逆引き（`nyanvddctl resolve` が3枚とも解決）
+- [x] アダプタ初期化失敗からの回復（FP16 拒否 → 機能を落として起動 → plug 成功）
+- [x] PLUG 直後の resolve（実測では即時でも引けた。保証はないので契約に明記）
+
 未消化:
 
+- [ ] S3/S4 復帰で二重初期化しないこと（再入ガードは入れたが実機未確認）
 - [ ] watchdog の発火と自動解除
 - [ ] plug→即 kill→再起動→リコンサイルでゴーストが出ない
 - [ ] メガネ挿抜のトポロジストール中にモニターが消えない（ParsecVDD 比較）

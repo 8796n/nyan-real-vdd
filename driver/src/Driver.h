@@ -128,6 +128,8 @@ namespace nyan
             UINT32 m_OsVersion = 0;   // IDDCX_VERSION from IddCxGetVersion, 0 if unavailable
             UINT32 m_CapFlags = 0;    // NYANVDD_CAP_*
             UINT32 m_RtPriorityRefs = 0;
+            UINT32 m_AdapterState = NYANVDD_ADAPTER_STATE_STARTING;
+            bool m_AdapterInitStarted = false;
 
             std::mutex m_Lock;
             MonitorSlot m_Slots[NYANVDD_MAX_MONITORS];

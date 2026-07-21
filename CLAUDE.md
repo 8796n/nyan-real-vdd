@@ -23,7 +23,9 @@ nyan Real VDD — Spatial Wall 用の IddCx 仮想ディスプレイドライバ
 - `scripts/build.ps1`（VS + SDK + WDK 必須）→ `scripts/sign-dev.ps1` →
   `scripts/install.ps1`（管理者）。手動 msbuild 直叩きはしない。
 - IddCx バージョンは vcxproj の `NyanIddCxMinor`（既定10）/
-  `NyanIddCxMinimumRequired`（既定5）で制御。根拠は docs/design.ja.md。
+  `NyanIddCxMinimumRequired`（既定10）で制御。根拠は docs/design.ja.md。
+  後者は**フレームワークのロード時ゲート**なので、対応OSを下げるときは
+  INF の decoration と両方を下げること。
 
 ## 言語
 

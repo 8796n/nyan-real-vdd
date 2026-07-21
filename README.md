@@ -62,6 +62,7 @@ scripts\install.ps1            # trust cert + pnputil + create device node
 out\nyanvddctl.exe status
 out\nyanvddctl.exe plug 1920x1080@120
 out\nyanvddctl.exe list
+out\nyanvddctl.exe resolve      # cookie -> \\.\DISPLAYn, mode, position
 out\nyanvddctl.exe unplug all
 
 scripts\uninstall.ps1          # remove everything

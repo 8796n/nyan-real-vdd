@@ -61,6 +61,7 @@ scripts\install.ps1            # 証明書信頼 + pnputil + devnode 作成
 out\nyanvddctl.exe status
 out\nyanvddctl.exe plug 1920x1080@120
 out\nyanvddctl.exe list
+out\nyanvddctl.exe resolve      # cookie -> \\.\DISPLAYn・モード・位置
 out\nyanvddctl.exe unplug all
 
 scripts\uninstall.ps1          # 全部戻す

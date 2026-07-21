@@ -12,10 +12,11 @@
 //  - No mandatory keepalive: monitors persist until unplugged. An optional
 //    watchdog (opt-in, >= 10 s) unplugs everything if the controlling client
 //    stops responding AND asked for that behavior.
-//  - Built against IddCx 1.10 headers with IDDCX_MINIMUM_VERSION_REQUIRED=5:
-//    one binary runs on Windows 10 2004+ and lights up 1.8/1.9/1.10 features
-//    (precise present regions, realtime GPU priority, HDR plumbing) by
-//    checking the OS IddCx version at runtime.
+//  - Built against IddCx 1.10 headers with IDDCX_MINIMUM_VERSION_REQUIRED=10,
+//    so the supported floor is Windows 11 24H2. That value is a load-time
+//    gate enforced by the framework, not just a compile-time constant:
+//    lowering the floor means changing it AND the INF's decoration.
+//    Anything past 1.10 is checked against the OS version at runtime.
 
 #include "Driver.h"
 
@@ -534,8 +535,22 @@ IndirectDeviceContext::~IndirectDeviceContext()
 
 void IndirectDeviceContext::InitAdapter()
 {
-    // Runtime IddCx version — the key to running one binary from Windows 10
-    // 2004 (IddCx 1.5) up while using newer DDIs where present.
+    // EvtDeviceD0Entry runs on every power transition, but an IddCx adapter is
+    // created once per device: without this guard a resume from S3/S4 would
+    // call IddCxAdapterInitAsync a second time and orphan the first adapter
+    // (along with every monitor still recorded against it).
+    {
+        lock_guard<mutex> Guard(m_Lock);
+        if (m_AdapterInitStarted)
+        {
+            NYVDD_LOG(L"InitAdapter: already initialized, skipping (power transition)");
+            return;
+        }
+        m_AdapterInitStarted = true;
+    }
+
+    // Runtime IddCx version — lets one binary use DDIs newer than the 1.10
+    // floor where the running OS provides them.
     IDARG_OUT_GETVERSION Version = {};
     if (NT_SUCCESS(IddCxGetVersion(&Version)))
     {
@@ -619,16 +634,85 @@ void IndirectDeviceContext::InitAdapter()
     AdapterInit.pCaps = &AdapterCaps;
     AdapterInit.ObjectAttributes = &Attr;
 
-    IDARG_OUT_ADAPTER_INIT AdapterInitOut;
-    NTSTATUS Status = IddCxAdapterInitAsync(&AdapterInit, &AdapterInitOut);
-    NYVDD_LOG(L"IddCxAdapterInitAsync: 0x%08X (caps flags 0x%X)", Status, (UINT32)AdapterCaps.Flags);
+    // Optional capabilities are exactly the ones IddCx can refuse: declaring
+    // FP16 without the rest of the HDR contract makes IddCxAdapterInitAsync
+    // fail outright. Retry without them rather than leaving the device up but
+    // permanently unable to plug anything (observed: a rejected adapter made
+    // every later PLUG return NOT_READY with nothing in status to explain it).
+    const IDDCX_ADAPTER_FLAGS RequestedFlags = AdapterCaps.Flags;
+    const IDDCX_ADAPTER_FLAGS Optional =
+        (IDDCX_ADAPTER_FLAGS)(
+#if IDDCX_VERSION_MINOR >= 10
+            IDDCX_ADAPTER_FLAGS_CAN_PROCESS_FP16 |
+#endif
+#if IDDCX_VERSION_MINOR >= 8
+            IDDCX_ADAPTER_FLAGS_PREFER_PRECISE_PRESENT_REGIONS |
+#endif
+            0);
 
+    const IDDCX_ADAPTER_FLAGS Attempts[] = {
+        RequestedFlags,
+#if IDDCX_VERSION_MINOR >= 10
+        (IDDCX_ADAPTER_FLAGS)(RequestedFlags & ~(IDDCX_ADAPTER_FLAGS)IDDCX_ADAPTER_FLAGS_CAN_PROCESS_FP16),
+#endif
+        (IDDCX_ADAPTER_FLAGS)(RequestedFlags & ~Optional),
+    };
+
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    IDARG_OUT_ADAPTER_INIT AdapterInitOut = {};
+
+    for (UINT32 i = 0; i < ARRAYSIZE(Attempts); ++i)
+    {
+        if (i > 0 && Attempts[i] == Attempts[i - 1])
+        {
+            continue; // nothing left to drop
+        }
+
+        AdapterCaps.Flags = Attempts[i];
+        Status = IddCxAdapterInitAsync(&AdapterInit, &AdapterInitOut);
+        NYVDD_LOG(L"IddCxAdapterInitAsync attempt %u: 0x%08X (caps flags 0x%X)",
+                  i, Status, (UINT32)AdapterCaps.Flags);
+        if (NT_SUCCESS(Status))
+        {
+            break;
+        }
+    }
+
+    lock_guard<mutex> Guard(m_Lock);
     if (NT_SUCCESS(Status))
     {
         m_Adapter = AdapterInitOut.AdapterObject;
 
         auto* pContext = WdfObjectGet_IndirectDeviceContextWrapper(AdapterInitOut.AdapterObject);
         pContext->pContext = this;
+
+        // Report only what the accepted attempt actually asked for.
+#if IDDCX_VERSION_MINOR >= 8
+        if (!(AdapterCaps.Flags & IDDCX_ADAPTER_FLAGS_PREFER_PRECISE_PRESENT_REGIONS))
+        {
+            m_CapFlags &= ~NYANVDD_CAP_PRECISE_DIRTY;
+        }
+#endif
+#if IDDCX_VERSION_MINOR >= 10
+        if (!(AdapterCaps.Flags & IDDCX_ADAPTER_FLAGS_CAN_PROCESS_FP16))
+        {
+            m_CapFlags &= ~NYANVDD_CAP_HDR10_READY;
+        }
+#endif
+        if (AdapterCaps.Flags != RequestedFlags)
+        {
+            NYVDD_LOG(L"Adapter came up with reduced capabilities (0x%X requested, 0x%X accepted)",
+                      (UINT32)RequestedFlags, (UINT32)AdapterCaps.Flags);
+        }
+    }
+    else
+    {
+        // Keep the device — and therefore the control interface — alive so a
+        // client can read the failure out of GET_STATUS instead of finding an
+        // unexplained yellow bang in Device Manager.
+        m_AdapterState = NYANVDD_ADAPTER_STATE_FAILED;
+        m_CapFlags = 0;
+        NYVDD_LOG(L"Adapter initialization failed permanently: 0x%08X", Status);
     }
 }
 
@@ -636,6 +720,8 @@ void IndirectDeviceContext::OnAdapterInitFinished(NTSTATUS Status)
 {
     lock_guard<mutex> Guard(m_Lock);
     m_AdapterReady = NT_SUCCESS(Status);
+    m_AdapterState = m_AdapterReady ? NYANVDD_ADAPTER_STATE_READY
+                                    : NYANVDD_ADAPTER_STATE_FAILED;
     NYVDD_LOG(L"Adapter init finished: 0x%08X (ready=%d)", Status, m_AdapterReady ? 1 : 0);
 }
 
@@ -668,13 +754,13 @@ NTSTATUS IndirectDeviceContext::CreateAndArriveMonitor(UINT ConnectorIndex)
     MonitorInfo.MonitorDescription.DataSize = sizeof(Edid);
     MonitorInfo.MonitorDescription.pData = Edid;
 
-    // Stable container id per cookie: Windows keys remembered display
-    // settings off monitor identity, so a re-plug of the same cookie is the
-    // same monitor as far as the OS is concerned.
-    UINT32 Cookie = CookieFromEdid(Edid, sizeof(Edid));
-    GUID ContainerId = { 0x408B3FE4, 0x8AC2, 0x4E97, { 0x83, 0xD8, 0xBE, 0x29, 0x00, 0x00, 0x00, 0x00 } };
-    memcpy(&ContainerId.Data4[4], &Cookie, sizeof(Cookie));
-    MonitorInfo.MonitorContainerId = ContainerId;
+    // Stable container id per cookie: Windows keys remembered display settings
+    // off monitor identity, so a re-plug of the same cookie is the same monitor
+    // as far as the OS is concerned. It is also the client's supported way back
+    // from an OS display to a cookie, so it is built with the shared helper
+    // from the public header.
+    const UINT32 Cookie = CookieFromEdid(Edid, sizeof(Edid));
+    NyanVddMakeContainerId(Cookie, &MonitorInfo.MonitorContainerId);
 
     IDARG_IN_MONITORCREATE MonitorCreate = {};
     MonitorCreate.ObjectAttributes = &Attr;
@@ -864,6 +950,7 @@ void IndirectDeviceContext::FillStatus(NYANVDD_STATUS_OUT* Out)
     Out->IddCxOsVersion = m_OsVersion;
     Out->CapFlags = m_CapFlags;
     Out->WatchdogTimeoutMs = m_WatchdogTimeoutMs;
+    Out->AdapterState = m_AdapterState;
     for (UINT i = 0; i < NYANVDD_MAX_MONITORS; ++i)
     {
         if (m_Slots[i].Used && m_Slots[i].Arrived)

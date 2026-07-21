@@ -7,6 +7,9 @@
 
 #include "../driver/src/Edid.h"
 
+#include <windows.h>
+#include "../include/nyanvdd_protocol.h"
+
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -417,10 +420,98 @@ namespace
         CHECK(R.MaxHkHz >= 264, "4K@120 needs a 264 kHz line rate, range says %u kHz", R.MaxHkHz);
         CHECK((E[108 + 4] & 0x0C) != 0, "horizontal offset flag not set for a >255 kHz maximum");
     }
+
+    // The container id is the client's supported route from an OS display back
+    // to the cookie that created it, so the derivation has to be exactly
+    // reversible and must reject container ids that are not ours.
+    void TestContainerIdCorrelation()
+    {
+        const uint32_t kCookies[] = { 1u, 0xC0FFEE01u, 0xDEADBEEFu, 0xFFFFFFFFu, 0x00FF00FFu };
+        for (uint32_t Cookie : kCookies)
+        {
+            GUID Id = {};
+            NyanVddMakeContainerId(Cookie, &Id);
+            CHECK(NyanVddCookieFromContainerId(&Id) == Cookie,
+                  "container id round-trip failed for 0x%08X (got 0x%08X)",
+                  Cookie, NyanVddCookieFromContainerId(&Id));
+
+            // Distinct cookies must not collide.
+            for (uint32_t Other : kCookies)
+            {
+                if (Other == Cookie) continue;
+                GUID OtherId = {};
+                NyanVddMakeContainerId(Other, &OtherId);
+                CHECK(memcmp(&Id, &OtherId, sizeof(GUID)) != 0,
+                      "cookies 0x%08X and 0x%08X share a container id", Cookie, Other);
+            }
+        }
+
+        // The byte layout observed on hardware: cookie 0xDEADBEEF appears as
+        // {408B3FE4-8AC2-4E97-83D8-BE29EFBEADDE}.
+        GUID Known = {};
+        NyanVddMakeContainerId(0xDEADBEEFu, &Known);
+        const unsigned char Expected[8] = { 0x83, 0xD8, 0xBE, 0x29, 0xEF, 0xBE, 0xAD, 0xDE };
+        CHECK(Known.Data1 == 0x408B3FE4 && Known.Data2 == 0x8AC2 && Known.Data3 == 0x4E97 &&
+              memcmp(Known.Data4, Expected, 8) == 0,
+              "container id layout changed; clients decoding it would break");
+
+        // Foreign container ids must not resolve to a cookie.
+        GUID Foreign = {};
+        NyanVddMakeContainerId(0x12345678u, &Foreign);
+        Foreign.Data1 ^= 0xFFu;
+        CHECK(NyanVddCookieFromContainerId(&Foreign) == 0,
+              "a container id from another device resolved to a cookie");
+
+        GUID Zero = {};
+        CHECK(NyanVddCookieFromContainerId(&Zero) == 0, "the null GUID resolved to a cookie");
+
+        // A cookie is never 0, so a valid container id never decodes to 0.
+        GUID ZeroCookie = {};
+        NyanVddMakeContainerId(0u, &ZeroCookie);
+        CHECK(NyanVddCookieFromContainerId(&ZeroCookie) == 0,
+              "cookie 0 is reserved and must not round-trip");
+    }
+
+    // The EDID identity the correlation recipe pre-filters on has to match the
+    // bytes the driver actually writes.
+    void TestEdidIdentityConstants()
+    {
+        uint8_t E[128];
+        BuildEdid(0x1234ABCDu, NyanMode{ 1920, 1080, 60 }, E);
+
+        const uint16_t ManufactureId = static_cast<uint16_t>(E[8] | (E[9] << 8));
+        const uint16_t ProductCodeId = static_cast<uint16_t>(E[10] | (E[11] << 8));
+        CHECK(ManufactureId == NYANVDD_EDID_MANUFACTURE_ID,
+              "NYANVDD_EDID_MANUFACTURE_ID is 0x%04X but the EDID carries 0x%04X",
+              (unsigned)NYANVDD_EDID_MANUFACTURE_ID, ManufactureId);
+        CHECK(ProductCodeId == NYANVDD_EDID_PRODUCT_CODE_ID,
+              "NYANVDD_EDID_PRODUCT_CODE_ID is 0x%04X but the EDID carries 0x%04X",
+              (unsigned)NYANVDD_EDID_PRODUCT_CODE_ID, ProductCodeId);
+    }
+
+    // The plug range advertised to clients must be the range the driver enforces.
+    void TestAdvertisedPlugRange()
+    {
+        CHECK(IsSupportedMode(NyanMode{ NYANVDD_MIN_WIDTH, NYANVDD_MIN_HEIGHT, NYANVDD_MIN_REFRESH_HZ }),
+              "the documented minimum mode is rejected");
+        CHECK(!IsSupportedMode(NyanMode{ NYANVDD_MIN_WIDTH - 1, NYANVDD_MIN_HEIGHT, NYANVDD_MIN_REFRESH_HZ }),
+              "a mode below the documented minimum width is accepted");
+        CHECK(!IsSupportedMode(NyanMode{ NYANVDD_MIN_WIDTH, NYANVDD_MIN_HEIGHT, NYANVDD_MAX_REFRESH_HZ + 1 }),
+              "a mode above the documented maximum refresh is accepted");
+        CHECK(!IsSupportedMode(NyanMode{ NYANVDD_MAX_DIMENSION + 1, NYANVDD_MIN_HEIGHT, 60 }),
+              "a mode above the documented maximum width is accepted");
+        CHECK(kMinWidth == NYANVDD_MIN_WIDTH && kMinHeight == NYANVDD_MIN_HEIGHT &&
+              kMaxActivePixels == NYANVDD_MAX_DIMENSION &&
+              kMinRefreshHz == NYANVDD_MIN_REFRESH_HZ && kMaxRefreshHz == NYANVDD_MAX_REFRESH_HZ,
+              "the header's advertised plug range drifted from the driver's limits");
+    }
 }
 
 int main()
 {
+    TestContainerIdCorrelation();
+    TestEdidIdentityConstants();
+    TestAdvertisedPlugRange();
     TestSupportedModePredicate();
     TestEdidStructure();
     TestCookieRoundTrip();
