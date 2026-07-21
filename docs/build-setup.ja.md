@@ -33,6 +33,12 @@ Z390 機（VS2026 Community 18.8 / SDK 26100）で最初にビルドを通すま
 - ビルド成果物は**ソリューション直下** `x64\Release\`（パッケージは
   `x64\Release\nyanvdd\`）に出る。`scripts/build.ps1` はそこから `out\` へ
   集める。
+- **MSBuild は 64bit 版（`Bin\amd64\MSBuild.exe`）を使うこと**: WDK ビルド
+  タスクは自プロセスのアーキテクチャに合わせて `infverif.dll` をロードする
+  が、kit の `build\<ver>\bin` には x64/arm64 しか無い。32bit MSBuild だと
+  「DLL 'x86\InfVerif.dll' を読み込めません (0x8007007E)」で **INF 検証だけ
+  が黙って落ちる**（ビルド自体は成功扱いになるのが罠。attestation 提出は
+  InfVerif /h 必須なので見逃さないこと）。build.ps1 は amd64 優先で解決済み。
 
 ## 検証済みの範囲（このマシン）
 

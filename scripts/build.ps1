@@ -18,7 +18,13 @@ $VsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer
 if (-not (Test-Path $VsWhere)) {
     throw 'vswhere.exe not found — install Visual Studio first.'
 }
-$MsBuild = & $VsWhere -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+# Use the 64-bit MSBuild: the WDK build tasks load infverif.dll from an
+# architecture-matched subdirectory, and the kits ship x64/arm64 only — the
+# 32-bit MSBuild fails INF verification with "cannot load x86\InfVerif.dll".
+$MsBuild = & $VsWhere -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\amd64\MSBuild.exe' | Select-Object -First 1
+if (-not $MsBuild) {
+    $MsBuild = & $VsWhere -latest -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+}
 if (-not $MsBuild) {
     throw 'MSBuild not found via vswhere.'
 }
