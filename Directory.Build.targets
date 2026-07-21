@@ -1,0 +1,22 @@
+<Project>
+  <!--
+    Opt-in diagnostic for kit discovery problems (missing stampinf, Inf2Cat,
+    infverif and friends), which otherwise surface only as an opaque
+    "TRK0005: Failed to locate" from the build tracker:
+
+      msbuild driver\nyanvdd.vcxproj /p:NyanShowWdkPaths=true ...
+  -->
+  <Target Name="NyanShowWdkPaths" BeforeTargets="Build" Condition="'$(NyanShowWdkPaths)' == 'true'">
+    <Message Importance="High" Text="[wdk] WDK_NuGet                    = $(WDK_NuGet)" />
+    <Message Importance="High" Text="[wdk] WDKContentRoot               = $(WDKContentRoot)" />
+    <Message Importance="High" Text="[wdk] WDKBinRoot                   = $(WDKBinRoot)" />
+    <Message Importance="High" Text="[wdk] WDKBinRoot_x86               = $(WDKBinRoot_x86)" />
+    <Message Importance="High" Text="[wdk] WDKKitVersion                = $(WDKKitVersion)" />
+    <Message Importance="High" Text="[wdk] TargetPlatformVersion        = $(TargetPlatformVersion)" />
+    <Message Importance="High" Text="[wdk] WindowsTargetPlatformVersion = $(WindowsTargetPlatformVersion)" />
+    <Message Importance="High" Text="[wdk] WindowsSdkDir                = $(WindowsSdkDir)" />
+    <Message Importance="High" Text="[wdk] InfToolPath                  = $(InfToolPath)" />
+    <Message Importance="High" Text="[wdk] Inf2CatToolPath              = $(Inf2CatToolPath)" />
+    <Message Importance="High" Text="[wdk] MatchingWdkPresent           = $(MatchingWdkPresent)" />
+  </Target>
+</Project>

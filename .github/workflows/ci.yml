@@ -70,7 +70,7 @@ jobs:
       # machine*, and the package's tools (stampinf, Inf2Cat) only exist under
       # its own version folder. SignMode=Off because no signing key exists here.
       - name: Build driver
-        run: msbuild driver\nyanvdd.vcxproj /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=10.0.28000.0 /p:SignMode=Off /p:OutDir=${{ github.workspace }}\ciout\driver\ /v:minimal /nologo
+        run: msbuild driver\nyanvdd.vcxproj /p:Configuration=Release /p:Platform=x64 /p:WindowsTargetPlatformVersion=10.0.28000.0 /p:SignMode=Off /p:NyanShowWdkPaths=true /p:OutDir=${{ github.workspace }}\ciout\driver\ /v:minimal /nologo
 
       - name: Verify INF
         shell: pwsh
