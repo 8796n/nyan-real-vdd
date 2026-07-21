@@ -22,6 +22,7 @@
 
 #include <winioctl.h>
 #include "../../include/nyanvdd_protocol.h"
+#include "Edid.h"
 
 #define NYANVDD_DRIVER_VERSION_MAJOR 0
 #define NYANVDD_DRIVER_VERSION_MINOR 1
@@ -35,17 +36,6 @@ namespace nyan
 {
     namespace vdd
     {
-        // Builds a 128-byte EDID base block: vendor "NYN", product 0x3D0F,
-        // serial = Cookie, product name "nyan Wall", serial string
-        // "NW-XXXXXXXX", preferred DTD from the plug parameters (falls back to
-        // 1080p60 when the mode is not DTD-encodable, i.e. pixel clock over
-        // 655.35 MHz).
-        void BuildEdid(UINT32 Cookie, UINT32 Width, UINT32 Height, UINT32 RefreshHz, BYTE Out[128]);
-
-        // Reads the serial number (= cookie) back out of an EDID base block.
-        // Returns 0 if the blob is not one of ours.
-        UINT32 CookieFromEdid(const void* Data, UINT32 Size);
-
         /// Manages the creation and lifetime of a Direct3D render device.
         struct Direct3DDevice
         {
@@ -79,6 +69,7 @@ namespace nyan
             HANDLE m_hAvailableBufferEvent;
             HANDLE m_hThread = nullptr;
             HANDLE m_hTerminateEvent = nullptr;
+            bool m_RtPriorityHeld = false;
         };
 
         struct MonitorSlot
@@ -108,7 +99,13 @@ namespace nyan
             void FillStatus(_Out_ NYANVDD_STATUS_OUT* Out);
             NTSTATUS SetWatchdog(UINT32 TimeoutMs);
             void PetWatchdog();
-            void NoteRealtimeGpuPriority(bool Applied);
+
+            // NYANVDD_CAP_RT_GPU_PRIORITY reflects swap-chains that currently
+            // hold realtime priority, so it has to be reference counted: it is
+            // acquired per swap-chain and must drop when the last one goes away
+            // (otherwise status keeps advertising it with no monitors plugged).
+            void AddRealtimeGpuPriorityRef();
+            void ReleaseRealtimeGpuPriorityRef();
 
             // Mode enumeration support (called from the DDI callbacks).
             // Copies the slot for the given EDID into *SlotOut; returns false
@@ -130,6 +127,7 @@ namespace nyan
             bool m_AdapterReady = false;
             UINT32 m_OsVersion = 0;   // IDDCX_VERSION from IddCxGetVersion, 0 if unavailable
             UINT32 m_CapFlags = 0;    // NYANVDD_CAP_*
+            UINT32 m_RtPriorityRefs = 0;
 
             std::mutex m_Lock;
             MonitorSlot m_Slots[NYANVDD_MAX_MONITORS];

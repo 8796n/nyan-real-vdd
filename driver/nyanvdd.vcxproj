@@ -41,6 +41,12 @@
     -->
     <NyanIddCxMinor Condition="'$(NyanIddCxMinor)' == ''">10</NyanIddCxMinor>
     <NyanIddCxMinimumRequired Condition="'$(NyanIddCxMinimumRequired)' == ''">10</NyanIddCxMinimumRequired>
+    <!--
+      stampinf stamps DriverVer with the LOCAL date while Inf2Cat validates it
+      against UTC, so east-of-UTC time zones fail with "postdated DriverVer"
+      for the first hours of every local day (JST 00:00-09:00).
+    -->
+    <Inf2CatUseLocalTime>true</Inf2CatUseLocalTime>
   </PropertyGroup>
   <PropertyGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <PlatformToolset>WindowsUserModeDriver10.0</PlatformToolset>

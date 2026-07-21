@@ -82,6 +82,22 @@ typedef struct NYANVDD_STATUS_OUT {
 // Plug flags.
 #define NYANVDD_PLUG_FLAG_HDR10 0x00000001u // report 10-bit capability for this monitor (needs CAP_HDR10_READY)
 
+// Accepted mode range. The driver refuses anything it cannot fully describe
+// to the OS, so a successful PLUG means the monitor really is offered at the
+// requested mode (it is reported both as a monitor mode and as a target mode,
+// and it becomes the monitor's preferred mode).
+//   640 <= Width  <= 4095      active pixels fit an EDID detailed timing
+//   480 <= Height <= 4095
+//    24 <= RefreshHz <= 240
+//   (Height + 35) * RefreshHz <= 510000     line rate fits the EDID range limits
+//   (Width + 160) * (Height + 35) * RefreshHz <= 2550000000   pixel clock ditto
+// Anything outside this fails with ERROR_INVALID_PARAMETER.
+#define NYANVDD_MIN_WIDTH      640u
+#define NYANVDD_MIN_HEIGHT     480u
+#define NYANVDD_MAX_DIMENSION  4095u
+#define NYANVDD_MIN_REFRESH_HZ 24u
+#define NYANVDD_MAX_REFRESH_HZ 240u
+
 typedef struct NYANVDD_PLUG_IN {
     UINT32 Cookie;    // non-zero, unique per plugged monitor; becomes the EDID serial
     UINT32 Width;     // preferred mode, e.g. 1920

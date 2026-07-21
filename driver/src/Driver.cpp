@@ -74,37 +74,9 @@ void NyanVddLog(const wchar_t* Format, ...)
 
 namespace
 {
-    struct ModeEntry { UINT32 W, H, Hz; };
-
-    // Static mode table. Geared to XR glasses walls: 1080p-4K at 60/72/90/120.
-    // The per-monitor preferred mode from PLUG is prepended (deduplicated).
-    const ModeEntry kModeTable[] = {
-        { 1920, 1080,  60 }, { 1920, 1080,  72 }, { 1920, 1080,  90 }, { 1920, 1080, 120 },
-        { 2560, 1440,  60 }, { 2560, 1440,  90 }, { 2560, 1440, 120 },
-        { 3840, 2160,  60 }, { 3840, 2160,  90 }, { 3840, 2160, 120 },
-        { 1280,  720,  60 },
-    };
-    constexpr UINT32 kMaxModes = ARRAYSIZE(kModeTable) + 1;
-
-    // Returns the mode list for a monitor: preferred first (index 0), then
-    // the static table minus a duplicate of the preferred mode.
-    UINT32 BuildModeList(const NYANVDD_PLUG_IN* Preferred, ModeEntry Out[kMaxModes])
-    {
-        UINT32 Count = 0;
-        if (Preferred)
-        {
-            Out[Count++] = { Preferred->Width, Preferred->Height, Preferred->RefreshHz };
-        }
-        for (const auto& M : kModeTable)
-        {
-            if (Preferred && M.W == Preferred->Width && M.H == Preferred->Height && M.Hz == Preferred->RefreshHz)
-            {
-                continue;
-            }
-            Out[Count++] = M;
-        }
-        return Count;
-    }
+    // The mode table and BuildModeList live in Edid.h/Edid.cpp so that tests/
+    // can exercise them without a WDK. This file only maps NyanMode onto the
+    // IddCx structures.
 
     void FillSignalInfo(DISPLAYCONFIG_VIDEO_SIGNAL_INFO& Mode, DWORD Width, DWORD Height, DWORD VSync, bool bMonitorMode)
     {
@@ -124,20 +96,20 @@ namespace
         Mode.pixelRate = ((UINT64)VSync) * ((UINT64)Width) * ((UINT64)Height);
     }
 
-    IDDCX_MONITOR_MODE CreateIddCxMonitorMode(const ModeEntry& M, IDDCX_MONITOR_MODE_ORIGIN Origin)
+    IDDCX_MONITOR_MODE CreateIddCxMonitorMode(const NyanMode& M, IDDCX_MONITOR_MODE_ORIGIN Origin)
     {
         IDDCX_MONITOR_MODE Mode = {};
         Mode.Size = sizeof(Mode);
         Mode.Origin = Origin;
-        FillSignalInfo(Mode.MonitorVideoSignalInfo, M.W, M.H, M.Hz, true);
+        FillSignalInfo(Mode.MonitorVideoSignalInfo, M.Width, M.Height, M.RefreshHz, true);
         return Mode;
     }
 
-    IDDCX_TARGET_MODE CreateIddCxTargetMode(const ModeEntry& M)
+    IDDCX_TARGET_MODE CreateIddCxTargetMode(const NyanMode& M)
     {
         IDDCX_TARGET_MODE Mode = {};
         Mode.Size = sizeof(Mode);
-        FillSignalInfo(Mode.TargetVideoSignalInfo.targetVideoSignalInfo, M.W, M.H, M.Hz, false);
+        FillSignalInfo(Mode.TargetVideoSignalInfo.targetVideoSignalInfo, M.Width, M.Height, M.RefreshHz, false);
         return Mode;
     }
 
@@ -153,21 +125,21 @@ namespace
                       : IDDCX_BITS_PER_COMPONENT_8;
     }
 
-    IDDCX_MONITOR_MODE2 CreateIddCxMonitorMode2(const ModeEntry& M, IDDCX_MONITOR_MODE_ORIGIN Origin, bool Hdr10)
+    IDDCX_MONITOR_MODE2 CreateIddCxMonitorMode2(const NyanMode& M, IDDCX_MONITOR_MODE_ORIGIN Origin, bool Hdr10)
     {
         IDDCX_MONITOR_MODE2 Mode = {};
         Mode.Size = sizeof(Mode);
         Mode.Origin = Origin;
-        FillSignalInfo(Mode.MonitorVideoSignalInfo, M.W, M.H, M.Hz, true);
+        FillSignalInfo(Mode.MonitorVideoSignalInfo, M.Width, M.Height, M.RefreshHz, true);
         SetBitsPerComponent(Mode.BitsPerComponent, Hdr10);
         return Mode;
     }
 
-    IDDCX_TARGET_MODE2 CreateIddCxTargetMode2(const ModeEntry& M, bool Hdr10)
+    IDDCX_TARGET_MODE2 CreateIddCxTargetMode2(const NyanMode& M, bool Hdr10)
     {
         IDDCX_TARGET_MODE2 Mode = {};
         Mode.Size = sizeof(Mode);
-        FillSignalInfo(Mode.TargetVideoSignalInfo.targetVideoSignalInfo, M.W, M.H, M.Hz, false);
+        FillSignalInfo(Mode.TargetVideoSignalInfo.targetVideoSignalInfo, M.Width, M.Height, M.RefreshHz, false);
         SetBitsPerComponent(Mode.BitsPerComponent, Hdr10);
         return Mode;
     }
@@ -422,6 +394,17 @@ void SwapChainProcessor::Run()
 
     RunCore();
 
+    // Release the realtime-priority reference before the swap-chain goes away,
+    // so status stops advertising the capability once the last one is gone.
+    if (m_RtPriorityHeld)
+    {
+        m_RtPriorityHeld = false;
+        if (g_DeviceContext)
+        {
+            g_DeviceContext->ReleaseRealtimeGpuPriorityRef();
+        }
+    }
+
     // Deleting the swap-chain object kicks the system into providing a new
     // one if the monitor is still active.
     WdfObjectDelete((WDFOBJECT)m_hSwapChain);
@@ -457,8 +440,12 @@ void SwapChainProcessor::RunCore()
         IDARG_IN_SETREALTIMEGPUPRIORITY Priority = {};
         Priority.pDevice = DxgiDevice.Get();
         HRESULT PriorityHr = IddCxSetRealtimeGPUPriority(m_hSwapChain, &Priority);
-        g_DeviceContext->NoteRealtimeGpuPriority(SUCCEEDED(PriorityHr));
-        if (FAILED(PriorityHr))
+        if (SUCCEEDED(PriorityHr))
+        {
+            m_RtPriorityHeld = true;
+            g_DeviceContext->AddRealtimeGpuPriorityRef();
+        }
+        else
         {
             NYVDD_LOG(L"IddCxSetRealtimeGPUPriority failed: 0x%08X", PriorityHr);
         }
@@ -740,10 +727,11 @@ NTSTATUS IndirectDeviceContext::CreateAndArriveMonitor(UINT ConnectorIndex)
 
 NTSTATUS IndirectDeviceContext::Plug(const NYANVDD_PLUG_IN& In, UINT32* ConnectorIndexOut)
 {
-    if (In.Cookie == 0 ||
-        In.Width < 640 || In.Width > 7680 ||
-        In.Height < 480 || In.Height > 4320 ||
-        In.RefreshHz < 24 || In.RefreshHz > 240)
+    // Refuse anything that cannot be fully described to the OS: accepting a
+    // mode we cannot express would hand the client a success for a monitor
+    // that comes up in some other mode.
+    const NyanMode Requested = { In.Width, In.Height, In.RefreshHz };
+    if (In.Cookie == 0 || !IsSupportedMode(Requested))
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -783,7 +771,7 @@ NTSTATUS IndirectDeviceContext::Plug(const NYANVDD_PLUG_IN& In, UINT32* Connecto
         {
             Slot.Params.Flags &= ~NYANVDD_PLUG_FLAG_HDR10;
         }
-        BuildEdid(In.Cookie, In.Width, In.Height, In.RefreshHz, Slot.Edid);
+        BuildEdid(In.Cookie, Requested, Slot.Edid);
     }
 
     NTSTATUS Status = CreateAndArriveMonitor(Index);
@@ -935,14 +923,17 @@ NTSTATUS IndirectDeviceContext::SetWatchdog(UINT32 TimeoutMs)
     return STATUS_SUCCESS;
 }
 
-void IndirectDeviceContext::NoteRealtimeGpuPriority(bool Applied)
+void IndirectDeviceContext::AddRealtimeGpuPriorityRef()
 {
     lock_guard<mutex> Guard(m_Lock);
-    if (Applied)
-    {
-        m_CapFlags |= NYANVDD_CAP_RT_GPU_PRIORITY;
-    }
-    else
+    ++m_RtPriorityRefs;
+    m_CapFlags |= NYANVDD_CAP_RT_GPU_PRIORITY;
+}
+
+void IndirectDeviceContext::ReleaseRealtimeGpuPriorityRef()
+{
+    lock_guard<mutex> Guard(m_Lock);
+    if (m_RtPriorityRefs > 0 && --m_RtPriorityRefs == 0)
     {
         m_CapFlags &= ~NYANVDD_CAP_RT_GPU_PRIORITY;
     }
@@ -1039,16 +1030,51 @@ NTSTATUS NyanVddAdapterCommitModes(IDDCX_ADAPTER AdapterObject, const IDARG_IN_C
     return STATUS_SUCCESS;
 }
 
-// Shared implementation for ParseMonitorDescription: resolves the slot from
-// the EDID cookie and reports its mode list (preferred mode first). Falls
-// back to the static table for EDIDs we cannot resolve (e.g. a query racing
-// an unplug).
+// Resolves the monitor a description belongs to (by the cookie in its EDID)
+// and returns the mode list for it, preferred mode first.
+//
+// Every callback that reports modes — monitor modes AND target modes — must go
+// through here. The OS realizes only the intersection of the two lists, so a
+// mode reported in one and missing from the other cannot be selected: the plug
+// appears to succeed while the monitor comes up in some other mode.
+//
+// Falls back to the static table for descriptions we cannot resolve (e.g. a
+// query racing an unplug); that path must not fail, only be less specific.
+static UINT32 ResolveModeList(
+    const IDDCX_MONITOR_DESCRIPTION& Description,
+    NyanMode Modes[kMaxModes],
+    _Out_ bool* Hdr10)
+{
+    MonitorSlot Slot;
+    const bool Resolved =
+        Description.Type == IDDCX_MONITOR_DESCRIPTION_TYPE_EDID &&
+        Description.DataSize == 128 &&
+        g_DeviceContext != nullptr &&
+        g_DeviceContext->CopySlotByEdid(Description.pData, Description.DataSize, &Slot);
+
+    NyanMode Preferred = {};
+    if (Resolved)
+    {
+        Preferred = { Slot.Params.Width, Slot.Params.Height, Slot.Params.RefreshHz };
+        // Plug() strips the HDR flag unless the adapter declared FP16, so a set
+        // flag here always implies the wire format is legal to report.
+        *Hdr10 = (Slot.Params.Flags & NYANVDD_PLUG_FLAG_HDR10) != 0;
+    }
+    else
+    {
+        *Hdr10 = false;
+    }
+
+    return BuildModeList(Resolved ? &Preferred : nullptr, Modes);
+}
+
+// Shared implementation for ParseMonitorDescription (v1 and v2).
 static NTSTATUS ParseDescriptionCommon(
     const IDDCX_MONITOR_DESCRIPTION& Description,
     UINT32 InputCount,
     _Out_ UINT32* OutputCount,
     _Out_ UINT32* PreferredIdx,
-    ModeEntry Modes[kMaxModes],
+    NyanMode Modes[kMaxModes],
     _Out_ bool* Hdr10)
 {
     if (Description.Type != IDDCX_MONITOR_DESCRIPTION_TYPE_EDID ||
@@ -1057,16 +1083,9 @@ static NTSTATUS ParseDescriptionCommon(
         return STATUS_INVALID_PARAMETER;
     }
 
-    MonitorSlot Slot;
-    const bool Resolved = g_DeviceContext &&
-        g_DeviceContext->CopySlotByEdid(Description.pData, Description.DataSize, &Slot);
-
-    const UINT32 Count = BuildModeList(Resolved ? &Slot.Params : nullptr, Modes);
+    const UINT32 Count = ResolveModeList(Description, Modes, Hdr10);
     *OutputCount = Count;
     *PreferredIdx = 0;
-    *Hdr10 = Resolved && (Slot.Params.Flags & NYANVDD_PLUG_FLAG_HDR10) != 0;
-    NYVDD_LOG(L"ParseMonitorDescription: resolved=%d count=%u input=%u",
-              Resolved ? 1 : 0, Count, InputCount);
 
     if (InputCount < Count)
     {
@@ -1078,7 +1097,7 @@ static NTSTATUS ParseDescriptionCommon(
 _Use_decl_annotations_
 NTSTATUS NyanVddParseMonitorDescription(const IDARG_IN_PARSEMONITORDESCRIPTION* pInArgs, IDARG_OUT_PARSEMONITORDESCRIPTION* pOutArgs)
 {
-    ModeEntry Modes[kMaxModes];
+    NyanMode Modes[kMaxModes];
     bool Hdr10 = false;
     NTSTATUS Status = ParseDescriptionCommon(pInArgs->MonitorDescription,
                                              pInArgs->MonitorModeBufferInputCount,
@@ -1106,18 +1125,17 @@ NTSTATUS NyanVddMonitorGetDefaultModes(IDDCX_MONITOR MonitorObject, const IDARG_
 
     // All nyanvdd monitors carry an EDID, so this path is not expected; keep
     // it functional with the static table for robustness.
-    NYVDD_LOG(L"GetDefaultModes: input=%u", pInArgs->DefaultMonitorModeBufferInputCount);
-    pOutArgs->DefaultMonitorModeBufferOutputCount = ARRAYSIZE(kModeTable);
+    pOutArgs->DefaultMonitorModeBufferOutputCount = kModeTableCount;
     if (pInArgs->DefaultMonitorModeBufferInputCount == 0)
     {
         return STATUS_SUCCESS;
     }
-    if (pInArgs->DefaultMonitorModeBufferInputCount < ARRAYSIZE(kModeTable))
+    if (pInArgs->DefaultMonitorModeBufferInputCount < kModeTableCount)
     {
         return STATUS_BUFFER_TOO_SMALL;
     }
 
-    for (UINT32 i = 0; i < ARRAYSIZE(kModeTable); ++i)
+    for (UINT32 i = 0; i < kModeTableCount; ++i)
     {
         pInArgs->pDefaultMonitorModes[i] = CreateIddCxMonitorMode(kModeTable[i], IDDCX_MONITOR_MODE_ORIGIN_DRIVER);
     }
@@ -1130,15 +1148,19 @@ NTSTATUS NyanVddMonitorQueryModes(IDDCX_MONITOR MonitorObject, const IDARG_IN_QU
 {
     UNREFERENCED_PARAMETER(MonitorObject);
 
-    // Target modes describe the device's processing capability; report the
-    // full static table (the OS intersects them with the monitor modes).
-    NYVDD_LOG(L"QueryTargetModes: input=%u", pInArgs->TargetModeBufferInputCount);
-    pOutArgs->TargetModeBufferOutputCount = ARRAYSIZE(kModeTable);
-    if (pInArgs->TargetModeBufferInputCount >= ARRAYSIZE(kModeTable))
+    // Report the same list the monitor modes come from — including the mode
+    // this monitor was plugged with. This device processes nothing, so every
+    // reported mode is within its capability.
+    NyanMode Modes[kMaxModes];
+    bool Hdr10 = false;
+    const UINT32 Count = ResolveModeList(pInArgs->MonitorDescription, Modes, &Hdr10);
+
+    pOutArgs->TargetModeBufferOutputCount = Count;
+    if (pInArgs->TargetModeBufferInputCount >= Count && pInArgs->pTargetModes != nullptr)
     {
-        for (UINT32 i = 0; i < ARRAYSIZE(kModeTable); ++i)
+        for (UINT32 i = 0; i < Count; ++i)
         {
-            pInArgs->pTargetModes[i] = CreateIddCxTargetMode(kModeTable[i]);
+            pInArgs->pTargetModes[i] = CreateIddCxTargetMode(Modes[i]);
         }
     }
     return STATUS_SUCCESS;
@@ -1157,7 +1179,7 @@ NTSTATUS NyanVddAdapterCommitModes2(IDDCX_ADAPTER AdapterObject, const IDARG_IN_
 _Use_decl_annotations_
 NTSTATUS NyanVddParseMonitorDescription2(const IDARG_IN_PARSEMONITORDESCRIPTION2* pInArgs, IDARG_OUT_PARSEMONITORDESCRIPTION* pOutArgs)
 {
-    ModeEntry Modes[kMaxModes];
+    NyanMode Modes[kMaxModes];
     bool Hdr10 = false;
     NTSTATUS Status = ParseDescriptionCommon(pInArgs->MonitorDescription,
                                              pInArgs->MonitorModeBufferInputCount,
@@ -1206,16 +1228,20 @@ NTSTATUS NyanVddMonitorQueryModes2(IDDCX_MONITOR MonitorObject, const IDARG_IN_Q
 {
     UNREFERENCED_PARAMETER(MonitorObject);
 
-    // 10-bit wire support may only be claimed while the adapter declared
-    // FP16 processing — reporting it without that is rejected at arrival.
-    const bool Hdr10 = g_DeviceContext && g_DeviceContext->Hdr10Ready();
-    NYVDD_LOG(L"QueryTargetModes2: input=%u hdr10=%d", pInArgs->TargetModeBufferInputCount, Hdr10 ? 1 : 0);
-    pOutArgs->TargetModeBufferOutputCount = ARRAYSIZE(kModeTable);
-    if (pInArgs->TargetModeBufferInputCount >= ARRAYSIZE(kModeTable))
+    // Same list as the monitor modes (see ResolveModeList). The 10-bit wire
+    // format may only be claimed while the adapter declared FP16 processing;
+    // Plug() enforces that when it accepts the per-monitor HDR flag, so the
+    // resolved flag is safe to use here and keeps both lists consistent.
+    NyanMode Modes[kMaxModes];
+    bool Hdr10 = false;
+    const UINT32 Count = ResolveModeList(pInArgs->MonitorDescription, Modes, &Hdr10);
+
+    pOutArgs->TargetModeBufferOutputCount = Count;
+    if (pInArgs->TargetModeBufferInputCount >= Count && pInArgs->pTargetModes != nullptr)
     {
-        for (UINT32 i = 0; i < ARRAYSIZE(kModeTable); ++i)
+        for (UINT32 i = 0; i < Count; ++i)
         {
-            pInArgs->pTargetModes[i] = CreateIddCxTargetMode2(kModeTable[i], Hdr10);
+            pInArgs->pTargetModes[i] = CreateIddCxTargetMode2(Modes[i], Hdr10);
         }
     }
     return STATUS_SUCCESS;

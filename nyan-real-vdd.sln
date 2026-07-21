@@ -6,6 +6,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "nyanvdd", "driver\nyanvdd.v
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "nyanvddctl", "cli\nyanvddctl.vcxproj", "{F860974F-B280-4D1E-B585-5364BB8D8058}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "nyanvdd_tests", "tests\nyanvdd_tests.vcxproj", "{376239C3-8025-484C-88FF-E2529CB98DB4}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -20,6 +22,10 @@ Global
 		{F860974F-B280-4D1E-B585-5364BB8D8058}.Debug|x64.Build.0 = Debug|x64
 		{F860974F-B280-4D1E-B585-5364BB8D8058}.Release|x64.ActiveCfg = Release|x64
 		{F860974F-B280-4D1E-B585-5364BB8D8058}.Release|x64.Build.0 = Release|x64
+		{376239C3-8025-484C-88FF-E2529CB98DB4}.Debug|x64.ActiveCfg = Debug|x64
+		{376239C3-8025-484C-88FF-E2529CB98DB4}.Debug|x64.Build.0 = Debug|x64
+		{376239C3-8025-484C-88FF-E2529CB98DB4}.Release|x64.ActiveCfg = Release|x64
+		{376239C3-8025-484C-88FF-E2529CB98DB4}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

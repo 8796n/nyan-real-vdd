@@ -45,9 +45,13 @@ Requirements: Visual Studio (C++), Windows SDK, and the
 with its Visual Studio extension.
 
 ```powershell
-scripts\build.ps1              # -> out\package, out\nyanvddctl.exe
+scripts\build.ps1              # -> out\package, out\nyanvddctl.exe; runs the unit tests
 scripts\sign-dev.ps1           # self-signed dev/distribution signing
 ```
+
+The mode and EDID logic is deliberately free of Windows dependencies so
+`tests\` can exercise it as a plain console program — no WDK, no install, no
+reboot. `scripts\build.ps1 -SkipTests` skips the run.
 
 ## Install & try
 

@@ -8,7 +8,8 @@
 
 param(
     [ValidateSet('Debug', 'Release')]
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+    [switch]$SkipTests
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,6 +54,16 @@ if (-not (Test-Path (Join-Path $PackageSrc 'nyanvdd.inf'))) {
 Copy-Item (Join-Path $PackageSrc '*') $PackageOut -Force
 
 Copy-Item (Join-Path $RepoRoot "x64\$Configuration\nyanvddctl.exe") $OutDir -Force
+Copy-Item (Join-Path $RepoRoot "x64\$Configuration\nyanvdd_tests.exe") $OutDir -Force
+
+if (-not $SkipTests) {
+    Write-Host ''
+    Write-Host 'Running unit tests...'
+    & (Join-Path $OutDir 'nyanvdd_tests.exe')
+    if ($LASTEXITCODE -ne 0) {
+        throw "unit tests failed ($LASTEXITCODE)"
+    }
+}
 
 Write-Host ''
 Write-Host "OK: $PackageOut (driver package), $(Join-Path $OutDir 'nyanvddctl.exe')"

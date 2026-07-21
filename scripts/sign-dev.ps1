@@ -52,7 +52,10 @@ if (-not $NoTimestamp) {
 & $SignTool.FullName sign /fd sha256 /sha1 $Cert.Thumbprint @TimestampArgs (Join-Path $PackageDir 'nyanvdd.dll')
 if ($LASTEXITCODE -ne 0) { throw 'signtool failed on nyanvdd.dll' }
 
-& $Inf2Cat.FullName /driver:$PackageDir /os:10_x64
+# /uselocaltime: DriverVer is stamped with the local date, but Inf2Cat checks
+# it against UTC by default and rejects it as postdated during the first hours
+# of a local day in east-of-UTC time zones.
+& $Inf2Cat.FullName /driver:$PackageDir /os:10_x64 /uselocaltime
 if ($LASTEXITCODE -ne 0) { throw 'Inf2Cat failed' }
 
 & $SignTool.FullName sign /fd sha256 /sha1 $Cert.Thumbprint @TimestampArgs (Join-Path $PackageDir 'nyanvdd.cat')
