@@ -126,8 +126,8 @@ namespace
     void SetBitsPerComponent(IDDCX_WIRE_BITS_PER_COMPONENT& B, bool Hdr10)
     {
         B = {};
-        B.Rgb = (UINT)(Hdr10 ? (IDDCX_BITS_PER_COMPONENT_8 | IDDCX_BITS_PER_COMPONENT_10)
-                             : IDDCX_BITS_PER_COMPONENT_8);
+        B.Rgb = Hdr10 ? (IDDCX_BITS_PER_COMPONENT_8 | IDDCX_BITS_PER_COMPONENT_10)
+                      : IDDCX_BITS_PER_COMPONENT_8;
     }
 
     IDDCX_MONITOR_MODE2 CreateIddCxMonitorMode2(const ModeEntry& M, IDDCX_MONITOR_MODE_ORIGIN Origin, bool Hdr10)
@@ -172,8 +172,8 @@ EVT_IDD_CX_DEVICE_IO_CONTROL NyanVddIoDeviceControl;
 #if IDDCX_VERSION_MINOR >= 10
 EVT_IDD_CX_ADAPTER_COMMIT_MODES2 NyanVddAdapterCommitModes2;
 EVT_IDD_CX_PARSE_MONITOR_DESCRIPTION2 NyanVddParseMonitorDescription2;
-EVT_IDD_CX_MONITOR_GET_DEFAULT_DESCRIPTION_MODES2 NyanVddMonitorGetDefaultModes2;
 EVT_IDD_CX_MONITOR_QUERY_TARGET_MODES2 NyanVddMonitorQueryModes2;
+EVT_IDD_CX_MONITOR_SET_DEFAULT_HDR_METADATA NyanVddMonitorSetDefaultHdrMetaData;
 #endif
 
 struct IndirectDeviceContextWrapper
@@ -267,8 +267,8 @@ NTSTATUS NyanVddDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT pDeviceInit)
     // are ignored and the *1 callbacks above are used.
     IddConfig.EvtIddCxAdapterCommitModes2 = NyanVddAdapterCommitModes2;
     IddConfig.EvtIddCxParseMonitorDescription2 = NyanVddParseMonitorDescription2;
-    IddConfig.EvtIddCxMonitorGetDefaultDescriptionModes2 = NyanVddMonitorGetDefaultModes2;
     IddConfig.EvtIddCxMonitorQueryTargetModes2 = NyanVddMonitorQueryModes2;
+    IddConfig.EvtIddCxMonitorSetDefaultHdrMetaData = NyanVddMonitorSetDefaultHdrMetaData;
 #endif
 
     Status = IddCxDeviceInitConfig(pDeviceInit, &IddConfig);
@@ -562,6 +562,9 @@ void IndirectDeviceContext::InitAdapter()
 #if IDDCX_VERSION_MINOR >= 10
     if (m_OsVersion >= NYANVDD_OS_1_10)
     {
+        // FP16 swap-chain surfaces are fine here (frames are discarded), and
+        // declaring it is what makes the OS light up the HDR path at all.
+        AdapterCaps.Flags |= IDDCX_ADAPTER_FLAGS_CAN_PROCESS_FP16;
         m_CapFlags |= NYANVDD_CAP_HDR10_READY;
     }
 #endif
@@ -658,9 +661,28 @@ NTSTATUS IndirectDeviceContext::CreateAndArriveMonitor(UINT ConnectorIndex)
         return Status;
     }
 
-    lock_guard<mutex> Guard(m_Lock);
-    m_Slots[ConnectorIndex].Monitor = MonitorCreateOut.MonitorObject;
-    m_Slots[ConnectorIndex].Arrived = true;
+    bool Stale = false;
+    {
+        lock_guard<mutex> Guard(m_Lock);
+        MonitorSlot& Slot = m_Slots[ConnectorIndex];
+        if (Slot.Used && Slot.Params.Cookie == Cookie && !Slot.Arrived)
+        {
+            Slot.Monitor = MonitorCreateOut.MonitorObject;
+            Slot.Arrived = true;
+        }
+        else
+        {
+            // The slot was unplugged (and possibly reused) while the arrival
+            // was in flight — undo the arrival we just made.
+            Stale = true;
+        }
+    }
+    if (Stale)
+    {
+        NYVDD_LOG(L"Plug of cookie 0x%08X raced an unplug — rolling back", Cookie);
+        IddCxMonitorDeparture(MonitorCreateOut.MonitorObject);
+        return STATUS_CANCELLED;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -716,7 +738,12 @@ NTSTATUS IndirectDeviceContext::Plug(const NYANVDD_PLUG_IN& In, UINT32* Connecto
     if (!NT_SUCCESS(Status))
     {
         lock_guard<mutex> Guard(m_Lock);
-        m_Slots[Index] = {};
+        // Only roll back our own reservation — the slot may already have
+        // been cleared (raced unplug) and even reused by another plug.
+        if (m_Slots[Index].Used && m_Slots[Index].Params.Cookie == In.Cookie && !m_Slots[Index].Arrived)
+        {
+            m_Slots[Index] = {};
+        }
         return Status;
     }
 
@@ -1004,7 +1031,8 @@ NTSTATUS NyanVddParseMonitorDescription(const IDARG_IN_PARSEMONITORDESCRIPTION* 
                                              &pOutArgs->MonitorModeBufferOutputCount,
                                              &pOutArgs->PreferredMonitorModeIdx,
                                              Modes, &Hdr10);
-    if (Status != STATUS_SUCCESS || pInArgs->MonitorModeBufferInputCount == 0)
+    if (Status != STATUS_SUCCESS || pInArgs->MonitorModeBufferInputCount == 0 ||
+        pInArgs->pMonitorModes == nullptr)
     {
         return Status;
     }
@@ -1080,7 +1108,8 @@ NTSTATUS NyanVddParseMonitorDescription2(const IDARG_IN_PARSEMONITORDESCRIPTION2
                                              &pOutArgs->MonitorModeBufferOutputCount,
                                              &pOutArgs->PreferredMonitorModeIdx,
                                              Modes, &Hdr10);
-    if (Status != STATUS_SUCCESS || pInArgs->MonitorModeBufferInputCount == 0)
+    if (Status != STATUS_SUCCESS || pInArgs->MonitorModeBufferInputCount == 0 ||
+        pInArgs->pMonitorModes == nullptr)
     {
         return Status;
     }
@@ -1095,25 +1124,12 @@ NTSTATUS NyanVddParseMonitorDescription2(const IDARG_IN_PARSEMONITORDESCRIPTION2
 }
 
 _Use_decl_annotations_
-NTSTATUS NyanVddMonitorGetDefaultModes2(IDDCX_MONITOR MonitorObject, const IDARG_IN_GETDEFAULTDESCRIPTIONMODES2* pInArgs, IDARG_OUT_GETDEFAULTDESCRIPTIONMODES2* pOutArgs)
+NTSTATUS NyanVddMonitorSetDefaultHdrMetaData(IDDCX_MONITOR MonitorObject, const IDARG_IN_MONITOR_SET_DEFAULT_HDR_METADATA* pInArgs)
 {
     UNREFERENCED_PARAMETER(MonitorObject);
-
-    pOutArgs->DefaultMonitorModeBufferOutputCount = ARRAYSIZE(kModeTable);
-    if (pInArgs->DefaultMonitorModeBufferInputCount == 0)
-    {
-        return STATUS_SUCCESS;
-    }
-    if (pInArgs->DefaultMonitorModeBufferInputCount < ARRAYSIZE(kModeTable))
-    {
-        return STATUS_BUFFER_TOO_SMALL;
-    }
-
-    for (UINT32 i = 0; i < ARRAYSIZE(kModeTable); ++i)
-    {
-        pInArgs->pDefaultMonitorModes[i] = CreateIddCxMonitorMode2(kModeTable[i], IDDCX_MONITOR_MODE_ORIGIN_DRIVER, false);
-    }
-    pOutArgs->PreferredMonitorModeIdx = 0;
+    UNREFERENCED_PARAMETER(pInArgs);
+    // Frames are not transported by this driver, so the default HDR metadata
+    // has nothing to be applied to — accept and ignore.
     return STATUS_SUCCESS;
 }
 
