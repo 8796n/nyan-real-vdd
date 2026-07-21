@@ -53,6 +53,21 @@ The mode and EDID logic is deliberately free of Windows dependencies so
 `tests\` can exercise it as a plain console program — no WDK, no install, no
 reboot. `scripts\build.ps1 -SkipTests` skips the run.
 
+## Testing on another machine
+
+```powershell
+scripts\package.ps1     # -> out\nyan-real-vdd-x64-<rev>.zip
+```
+
+Copy the zip to the target machine, unpack it, and run `.\install.ps1` from an
+elevated PowerShell. No repository, WDK, or build needed there; the bundled
+`README.txt` explains what it installs, including the self-signed certificate
+it adds to that machine's trusted roots.
+
+CI verifies the build and runs the tests, but its artifacts are **unsigned** —
+the signing key never leaves the developer's machine, so installable packages
+come from `package.ps1`.
+
 ## Install & try
 
 ```powershell
