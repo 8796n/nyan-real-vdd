@@ -1099,7 +1099,7 @@ NTSTATUS NyanVddAdapterCommitModes2(IDDCX_ADAPTER AdapterObject, const IDARG_IN_
 }
 
 _Use_decl_annotations_
-NTSTATUS NyanVddParseMonitorDescription2(const IDARG_IN_PARSEMONITORDESCRIPTION2* pInArgs, IDARG_OUT_PARSEMONITORDESCRIPTION2* pOutArgs)
+NTSTATUS NyanVddParseMonitorDescription2(const IDARG_IN_PARSEMONITORDESCRIPTION2* pInArgs, IDARG_OUT_PARSEMONITORDESCRIPTION* pOutArgs)
 {
     ModeEntry Modes[kMaxModes];
     bool Hdr10 = false;
@@ -1134,7 +1134,7 @@ NTSTATUS NyanVddMonitorSetDefaultHdrMetaData(IDDCX_MONITOR MonitorObject, const 
 }
 
 _Use_decl_annotations_
-NTSTATUS NyanVddMonitorQueryModes2(IDDCX_MONITOR MonitorObject, const IDARG_IN_QUERYTARGETMODES2* pInArgs, IDARG_OUT_QUERYTARGETMODES2* pOutArgs)
+NTSTATUS NyanVddMonitorQueryModes2(IDDCX_MONITOR MonitorObject, const IDARG_IN_QUERYTARGETMODES2* pInArgs, IDARG_OUT_QUERYTARGETMODES* pOutArgs)
 {
     UNREFERENCED_PARAMETER(MonitorObject);
 
