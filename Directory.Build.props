@@ -11,4 +11,17 @@
           Condition="Exists('packages\Microsoft.Windows.SDK.CPP.x64.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.x64.props') and '$(Platform)' == 'x64'" />
   <Import Project="packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.props"
           Condition="Exists('packages\Microsoft.Windows.SDK.CPP.10.0.28000.1839\build\native\Microsoft.Windows.SDK.cpp.props')" />
+
+  <PropertyGroup Condition="'$(WDK_NuGet)' == 'true'">
+    <!--
+      The WDK targets build tool paths as "$(WDKContentRoot)bin\...", i.e. they
+      assume a trailing separator (the installed kit's registry value has one).
+      The NuGet package sets it without, which yields "...\cbin\..." and a build
+      that fails with 'Failed to locate: stampinf.exe'.
+    -->
+    <WDKContentRoot>$([MSBuild]::EnsureTrailingSlash('$(WDKContentRoot)'))</WDKContentRoot>
+    <WindowsSdkDir>$([MSBuild]::EnsureTrailingSlash('$(WindowsSdkDir)'))</WindowsSdkDir>
+    <WindowsSdkDir_10>$([MSBuild]::EnsureTrailingSlash('$(WindowsSdkDir_10)'))</WindowsSdkDir_10>
+    <UCRTContentRoot>$([MSBuild]::EnsureTrailingSlash('$(UCRTContentRoot)'))</UCRTContentRoot>
+  </PropertyGroup>
 </Project>

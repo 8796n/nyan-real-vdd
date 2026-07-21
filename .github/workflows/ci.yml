@@ -52,6 +52,19 @@ jobs:
       - name: Restore WDK
         run: nuget restore packages.config -PackagesDirectory packages
 
+      # Cheap guard: if the kit ever moves, this says so directly instead of
+      # letting the build fail later with a missing-tool error.
+      - name: Check the restored kit
+        shell: pwsh
+        run: |
+          $root = 'packages\Microsoft.Windows.WDK.x64.10.0.28000.1839\c'
+          foreach ($tool in "$root\bin\10.0.28000.0\x64\stampinf.exe",
+                            "$root\bin\10.0.28000.0\x86\Inf2Cat.exe",
+                            "$root\tools\10.0.28000.0\x64\infverif.exe") {
+            if (-not (Test-Path $tool)) { throw "missing from the restored WDK: $tool" }
+            Write-Host "found $tool"
+          }
+
       # WindowsTargetPlatformVersion is pinned to the version the WDK package
       # carries: it otherwise defaults to the newest SDK *installed on the
       # machine*, and the package's tools (stampinf, Inf2Cat) only exist under
