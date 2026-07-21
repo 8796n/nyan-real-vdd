@@ -23,10 +23,10 @@ those by design:
   Clients reconcile at startup (list, then unplug unknown cookies). An
   *optional* watchdog (>= 10 s, refreshed by any control call) is available for
   clients that want orphan cleanup.
-- **One binary, Windows 10 2004 → current.** Built against IddCx 1.10 headers
-  with a 1.5 runtime floor. Newer OS features light up automatically at
-  runtime: precise present regions (1.8+), realtime GPU priority for the
-  frame path (1.9+), HDR10-capable mode reporting (1.10+, per-monitor opt-in).
+- **Windows 11 24H2+ (IddCx 1.10 floor).** Everything older is end-of-life,
+  so it is not carried as untested baggage. Precise present regions and
+  realtime GPU priority for the frame path are always on; features beyond
+  1.10 (e.g. IddCx 1.11 D3D12) are detected at runtime.
 
 ## Layout
 

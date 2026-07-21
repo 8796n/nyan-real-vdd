@@ -18,9 +18,9 @@ CatalogFile=nyanvdd.cat
 DriverVer=
 
 [Manufacturer]
-%ManufacturerName%=Standard,NT$ARCH$.10.0...19041
+%ManufacturerName%=Standard,NT$ARCH$.10.0...26100
 
-[Standard.NT$ARCH$.10.0...19041]
+[Standard.NT$ARCH$.10.0...26100]
 %DeviceName%=NyanVDD_Install, Root\NyanVDD
 %DeviceName%=NyanVDD_Install, NyanVDD
 

@@ -34,12 +34,13 @@
     <RootNamespace>nyanvdd</RootNamespace>
     <!--
       IddCx version strategy: build against the 1.10 headers (HDR-capable *2
-      DDIs) while requiring only 1.5 at runtime, so one binary serves
-      Windows 10 2004 (19041) through current Windows 11. Newer DDIs are
-      gated on IddCxGetVersion at runtime.
+      DDIs) with a 1.10 runtime floor — supported OS is Windows 11 24H2+
+      (everything older is EOL; the INF decoration 10.0...26100 is the
+      enforcement point). Features beyond 1.10 (e.g. 1.11 D3D12) stay gated
+      on IddCxGetVersion at runtime.
     -->
     <NyanIddCxMinor Condition="'$(NyanIddCxMinor)' == ''">10</NyanIddCxMinor>
-    <NyanIddCxMinimumRequired Condition="'$(NyanIddCxMinimumRequired)' == ''">5</NyanIddCxMinimumRequired>
+    <NyanIddCxMinimumRequired Condition="'$(NyanIddCxMinimumRequired)' == ''">10</NyanIddCxMinimumRequired>
   </PropertyGroup>
   <PropertyGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <PlatformToolset>WindowsUserModeDriver10.0</PlatformToolset>

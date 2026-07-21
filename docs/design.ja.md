@@ -13,8 +13,14 @@
 
 ## IddCx バージョン戦略
 
-- **ビルド**: 1.10 ヘッダ（`NyanIddCxMinor=10`）+ `IDDCX_MINIMUM_VERSION_REQUIRED=5`。
-- **実行時フロア**: 1.5 = Windows 10 2004 (19041)。Spatial Wall 本体の下限に一致。
+- **ビルド**: 1.10 ヘッダ（`NyanIddCxMinor=10`）+ `IDDCX_MINIMUM_VERSION_REQUIRED=10`。
+- **対応 OS: Windows 11 24H2 (26100) 以上**（2026-07-21 決定）。施行点は INF の
+  decoration `10.0...26100`。理由 = Windows 10 は 2025-10 で EOL、Win11 23H2
+  以前もコンシューマ向けは EOL 済みで、古いフロアは「未検証の負債」にしか
+  ならない。※もし 24H2 未満の実機を支えたくなったら decoration を `22631`
+  等へ下げるだけ（コードのランタイムゲートは残してある）。
+- *1 系コールバックはフロア 1.10 では呼ばれないが、共通実装の薄いラッパー
+  なので登録したまま残す（フロアを下げる時の保険 + 登録必須検証への安全策）。
 - 実行時に `IddCxGetVersion` で判定して段階的に有効化:
   - 1.8+ (`0x1800`): `IDDCX_ADAPTER_FLAGS_PREFER_PRECISE_PRESENT_REGIONS`
     （キャプチャ側のダーティ精度向上）
@@ -73,14 +79,16 @@ priority で遅延源にならないようにする。
 - [x] `rt-gpu-priority` 点灯（スワップチェーン割当後に
       `IddCxSetRealtimeGPUPriority` 成功）+ `precise-dirty` 点灯
 - [x] unplug all で PnP からも即時消滅
+- [x] 非管理者での制御チャネル open（plug/unplug/list/status の一巡は
+      非昇格シェルから実行 = INF の SDDL が機能。昇格が要るのは
+      ドライバ更新と devnode 作成/削除のみ → scripts/dev-update.ps1）
 
 未消化:
 
 - [ ] watchdog の発火と自動解除
-- [ ] 非管理者での制御チャネル open（今回の一巡は昇格済みシェル併用）
 - [ ] plug→即 kill→再起動→リコンサイルでゴーストが出ない
 - [ ] メガネ挿抜のトポロジストール中にモニターが消えない（ParsecVDD 比較）
 - [ ] 選択中モードが preferred (@120Hz) になっているかの目視
 - [ ] `EnableFp16=1` + gamma ramp 実装後に「HDR を使用する」が出るか
-- [ ] Win10 19041 実機（または VM）で 1.5 フロア動作
+- [ ] 2台目マシン（N100）が 24H2 以上か確認して導入
 - [ ] スリープ/復帰でモニター構成が保持されるか
