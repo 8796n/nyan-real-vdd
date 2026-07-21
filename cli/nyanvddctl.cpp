@@ -9,6 +9,7 @@
 #include <swdevice.h>
 #include <cfgmgr32.h>
 #include <devpkey.h>
+#include <wtsapi32.h>
 
 #include <cstdio>
 #include <cwchar>
@@ -21,6 +22,7 @@
 #pragma comment(lib, "swdevice.lib")
 #pragma comment(lib, "cfgmgr32.lib")
 #pragma comment(lib, "user32.lib")
+#pragma comment(lib, "wtsapi32.lib")
 
 namespace
 {
@@ -162,6 +164,79 @@ namespace
         return true;
     }
 
+    // ---- why a plugged monitor may not be on screen ----
+    //
+    // The monitors this driver creates belong to the console session's
+    // desktop. While a remote session owns the user's desktop, that desktop is
+    // not rendered, so a monitor stays plugged-but-inactive forever. This is
+    // the single most confusing failure mode, so the tool names it explicitly
+    // instead of leaving the user with a display that just never shows up.
+    //
+    // The check lives in the client, not the driver: the driver runs in
+    // session 0 and would need a session-management dependency to answer a
+    // question the caller can answer for itself.
+
+    bool IsConsoleSessionActive(std::wstring* Explanation)
+    {
+        const DWORD ConsoleSession = WTSGetActiveConsoleSessionId();
+        if (ConsoleSession == 0xFFFFFFFFu)
+        {
+            return true; // cannot tell; do not cry wolf
+        }
+
+        WTS_CONNECTSTATE_CLASS* State = nullptr;
+        DWORD Bytes = 0;
+        if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, ConsoleSession,
+                                         WTSConnectState, (LPWSTR*)&State, &Bytes) ||
+            Bytes < sizeof(WTS_CONNECTSTATE_CLASS))
+        {
+            if (State) WTSFreeMemory(State);
+            return true;
+        }
+        const WTS_CONNECTSTATE_CLASS Value = *State;
+        WTSFreeMemory(State);
+
+        if (Value == WTSActive)
+        {
+            return true;
+        }
+
+        // Name the session that took the desktop, so the message is actionable.
+        std::wstring Owner = L"another session";
+        PWTS_SESSION_INFOW Sessions = nullptr;
+        DWORD SessionCount = 0;
+        if (WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &Sessions, &SessionCount))
+        {
+            for (DWORD i = 0; i < SessionCount; ++i)
+            {
+                if (Sessions[i].State != WTSActive) continue;
+                USHORT* Protocol = nullptr;
+                DWORD ProtocolBytes = 0;
+                const bool Remote =
+                    WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, Sessions[i].SessionId,
+                                                WTSClientProtocolType, (LPWSTR*)&Protocol,
+                                                &ProtocolBytes) &&
+                    ProtocolBytes >= sizeof(USHORT) && *Protocol != 0;
+                if (Protocol) WTSFreeMemory(Protocol);
+
+                Owner = Remote ? L"a Remote Desktop session" : L"another local session";
+                break;
+            }
+            WTSFreeMemory(Sessions);
+        }
+
+        if (Explanation)
+        {
+            *Explanation =
+                L"the console session is not the one being displayed (" + Owner +
+                L" owns the desktop).\n"
+                L"  nyanvdd monitors live on the console desktop, so they stay plugged but\n"
+                L"  never appear while that is the case. They should come back on their own\n"
+                L"  once the console session is in front again.";
+        }
+        return false;
+    }
+
     // ---- cookie -> OS display correlation ----
     //
     // Reference implementation of the recipe documented in
@@ -295,6 +370,23 @@ namespace
         return true;
     }
 
+    // Prints why monitors are plugged but not on screen. Called whenever we
+    // have something inactive to explain, so the user never has to guess.
+    void ReportWhyNotOnScreen()
+    {
+        std::wstring Explanation;
+        if (!IsConsoleSessionActive(&Explanation))
+        {
+            wprintf(L"\nNot visible here because %s\n", Explanation.c_str());
+        }
+        else
+        {
+            wprintf(L"\nThe console session is active, so this should be transient: the OS\n"
+                    L"  applies topology changes asynchronously. If it persists, check\n"
+                    L"  C:\\ProgramData\\nyan-real-vdd\\driver.log.\n");
+        }
+    }
+
     // ---- commands ----
 
     int CmdResolve(HANDLE Device)
@@ -341,9 +433,8 @@ namespace
             }
             else
             {
-                // Expected briefly right after PLUG: the topology change is
-                // asynchronous. Persisting means the monitor is not attached.
-                wprintf(L"cookie 0x%08X -> (not in the active display topology yet)\n", M.Cookie);
+                wprintf(L"cookie 0x%08X -> NOT on screen (%ux%u@%u requested)\n",
+                        M.Cookie, M.Width, M.Height, M.RefreshHz);
                 ++Missing;
             }
         }
@@ -362,6 +453,10 @@ namespace
             }
         }
 
+        if (Missing != 0)
+        {
+            ReportWhyNotOnScreen();
+        }
         return Missing == 0 ? 0 : 2;
     }
 
@@ -403,12 +498,29 @@ namespace
             wprintf(L"no monitors plugged\n");
             return 0;
         }
+        UINT32 NotDriven = 0;
         for (UINT32 i = 0; i < List.Count; ++i)
         {
             const NYANVDD_MONITOR_INFO& M = List.Monitors[i];
-            wprintf(L"connector %u: cookie 0x%08X  %ux%u@%u%s\n",
+            const bool Driven = (M.Flags & NYANVDD_MONITOR_FLAG_ACTIVE) != 0;
+            if (!Driven) ++NotDriven;
+            wprintf(L"connector %u: cookie 0x%08X  %ux%u@%u  %s%s\n",
                     M.ConnectorIndex, M.Cookie, M.Width, M.Height, M.RefreshHz,
+                    Driven ? L"driven by the OS" : L"not attached to a desktop",
                     (M.Flags & NYANVDD_PLUG_FLAG_HDR10) ? L"  [hdr10]" : L"");
+        }
+
+        // "Driven" is about the OS, not about this session: monitors driven on
+        // the console desktop are invisible here while a remote session owns
+        // the desktop, so say that even when everything reports as driven.
+        std::wstring Explanation;
+        if (!IsConsoleSessionActive(&Explanation))
+        {
+            wprintf(L"\nNone of these are visible in this session: %s\n", Explanation.c_str());
+        }
+        else if (NotDriven != 0)
+        {
+            ReportWhyNotOnScreen();
         }
         return 0;
     }
@@ -454,6 +566,15 @@ namespace
         }
         wprintf(L"plugged cookie 0x%08X on connector %u (%ux%u@%u)\n",
                 In.Cookie, Out.ConnectorIndex, In.Width, In.Height, In.RefreshHz);
+
+        // A successful PLUG is not a promise that a display appears. Say so
+        // immediately when we already know it will not.
+        std::wstring Explanation;
+        if (!IsConsoleSessionActive(&Explanation))
+        {
+            wprintf(L"\nWARNING: this monitor will not appear: %s\n", Explanation.c_str());
+            return 3;
+        }
         return 0;
     }
 

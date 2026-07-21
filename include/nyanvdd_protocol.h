@@ -40,7 +40,9 @@ extern "C" {
 
 // v2: NYANVDD_STATUS_OUT.Reserved became AdapterState (layout unchanged), and
 //     the container-id correlation helpers below became part of the contract.
-#define NYANVDD_PROTOCOL_VERSION 2
+// v3: NYANVDD_MONITOR_INFO.Flags gained NYANVDD_MONITOR_FLAG_ACTIVE, which
+//     reports whether the OS is actually driving a plugged monitor.
+#define NYANVDD_PROTOCOL_VERSION 3
 
 // Device interface exposed by the driver. Enumerate with
 // CM_Get_Device_Interface_ListW and open with CreateFileW
@@ -203,13 +205,38 @@ typedef struct NYANVDD_UNPLUG_IN {
     UINT32 Cookie; // 0 = unplug ALL monitors
 } NYANVDD_UNPLUG_IN;
 
+// State bits reported in NYANVDD_MONITOR_INFO.Flags, above the plug flags.
+//
+// ACTIVE means the OS committed a display path for this monitor: it is
+// attached to a desktop and being driven. It is clear briefly after PLUG
+// while the topology change is applied, and stays clear if the OS never
+// attaches the monitor at all.
+//
+// ACTIVE does NOT mean the calling process can see the display. The monitors
+// this driver creates belong to the CONSOLE session's desktop. While a remote
+// session (Remote Desktop) owns the user's desktop, they stay ACTIVE on the
+// console desktop but are absent from the remote session's QueryDisplayConfig
+// and EnumDisplayDevices entirely. Measured on Windows 11 24H2: PLUG returns
+// success, EvtIddCxAdapterCommitModes reports the path active, and the display
+// is still invisible to the remote session; it comes back by itself once the
+// console session is in front again.
+//
+// A client that needs a usable display therefore has to check two things:
+//   - this flag          -> is the OS driving the monitor at all?
+//   - its own session's display enumeration -> can this process see it?
+// ACTIVE set but absent from your own topology means another session owns the
+// desktop. Report that; it is not a driver fault and retrying will not help.
+#define NYANVDD_MONITOR_FLAG_ACTIVE 0x00010000u
+#define NYANVDD_MONITOR_STATE_MASK  0xFFFF0000u // Flags bits above the plug flags
+
 typedef struct NYANVDD_MONITOR_INFO {
     UINT32 Cookie;
     UINT32 ConnectorIndex;
     UINT32 Width;
     UINT32 Height;
     UINT32 RefreshHz;
-    UINT32 Flags; // NYANVDD_PLUG_FLAG_* as accepted at plug time
+    UINT32 Flags; // NYANVDD_PLUG_FLAG_* as accepted at plug time, plus
+                  // NYANVDD_MONITOR_FLAG_* state bits
 } NYANVDD_MONITOR_INFO;
 
 typedef struct NYANVDD_LIST_OUT {

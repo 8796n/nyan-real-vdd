@@ -934,8 +934,36 @@ void IndirectDeviceContext::List(NYANVDD_LIST_OUT* Out)
             Info.Width = Slot.Params.Width;
             Info.Height = Slot.Params.Height;
             Info.RefreshHz = Slot.Params.RefreshHz;
-            Info.Flags = Slot.Params.Flags;
+            Info.Flags = Slot.Params.Flags |
+                         (Slot.Active ? NYANVDD_MONITOR_FLAG_ACTIVE : 0u);
         }
+    }
+}
+
+void IndirectDeviceContext::SetActiveMonitors(const IDDCX_MONITOR* Monitors, UINT32 Count)
+{
+    lock_guard<mutex> Guard(m_Lock);
+    for (UINT i = 0; i < NYANVDD_MAX_MONITORS; ++i)
+    {
+        MonitorSlot& Slot = m_Slots[i];
+        if (!Slot.Used || !Slot.Arrived)
+        {
+            continue;
+        }
+
+        bool Active = false;
+        for (UINT32 j = 0; j < Count; ++j)
+        {
+            if (Slot.Monitor == Monitors[j]) { Active = true; break; }
+        }
+
+        if (Slot.Active != Active)
+        {
+            NYVDD_LOG(L"Monitor cookie 0x%08X is now %s", Slot.Params.Cookie,
+                      Active ? L"active (the OS is driving it)"
+                             : L"inactive (not part of the desktop)");
+        }
+        Slot.Active = Active;
     }
 }
 
@@ -1111,9 +1139,29 @@ _Use_decl_annotations_
 NTSTATUS NyanVddAdapterCommitModes(IDDCX_ADAPTER AdapterObject, const IDARG_IN_COMMITMODES* pInArgs)
 {
     UNREFERENCED_PARAMETER(AdapterObject);
-    UNREFERENCED_PARAMETER(pInArgs);
-    // Nothing to reconfigure: swap-chains are managed by IddCx and this
-    // device has no transport of its own.
+
+    // Nothing to reconfigure — swap-chains are managed by IddCx and this
+    // device has no transport of its own — but this is the OS telling us which
+    // monitors it actually drives, which is what LIST reports as ACTIVE.
+    //
+    // Note this says nothing about which session can see the monitor: under
+    // Remote Desktop the path is still committed and active on the console
+    // desktop while the remote session cannot see the display at all.
+    IDDCX_MONITOR Active[NYANVDD_MAX_MONITORS];
+    UINT32 Count = 0;
+    for (UINT i = 0; i < pInArgs->PathCount && Count < ARRAYSIZE(Active); ++i)
+    {
+        if (pInArgs->pPaths[i].Flags & IDDCX_PATH_FLAGS_ACTIVE)
+        {
+            Active[Count++] = pInArgs->pPaths[i].MonitorObject;
+        }
+    }
+    NYVDD_LOG(L"CommitModes: %u path(s), %u active", pInArgs->PathCount, Count);
+
+    if (g_DeviceContext)
+    {
+        g_DeviceContext->SetActiveMonitors(Active, Count);
+    }
     return STATUS_SUCCESS;
 }
 
@@ -1259,7 +1307,22 @@ _Use_decl_annotations_
 NTSTATUS NyanVddAdapterCommitModes2(IDDCX_ADAPTER AdapterObject, const IDARG_IN_COMMITMODES2* pInArgs)
 {
     UNREFERENCED_PARAMETER(AdapterObject);
-    UNREFERENCED_PARAMETER(pInArgs);
+
+    IDDCX_MONITOR Active[NYANVDD_MAX_MONITORS];
+    UINT32 Count = 0;
+    for (UINT i = 0; i < pInArgs->PathCount && Count < ARRAYSIZE(Active); ++i)
+    {
+        if (pInArgs->pPaths[i].Flags & IDDCX_PATH_FLAGS_ACTIVE)
+        {
+            Active[Count++] = pInArgs->pPaths[i].MonitorObject;
+        }
+    }
+    NYVDD_LOG(L"CommitModes2: %u path(s), %u active", pInArgs->PathCount, Count);
+
+    if (g_DeviceContext)
+    {
+        g_DeviceContext->SetActiveMonitors(Active, Count);
+    }
     return STATUS_SUCCESS;
 }
 

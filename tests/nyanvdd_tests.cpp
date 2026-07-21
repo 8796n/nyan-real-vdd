@@ -489,6 +489,27 @@ namespace
               (unsigned)NYANVDD_EDID_PRODUCT_CODE_ID, ProductCodeId);
     }
 
+    // NYANVDD_MONITOR_INFO.Flags carries plug flags and state bits in one
+    // field, so the two namespaces must not overlap: a client masking for one
+    // must never see the other.
+    void TestMonitorFlagNamespaces()
+    {
+        CHECK((NYANVDD_MONITOR_STATE_MASK & NYANVDD_PLUG_FLAG_HDR10) == 0,
+              "the state-bit mask overlaps NYANVDD_PLUG_FLAG_HDR10");
+        CHECK((NYANVDD_MONITOR_FLAG_ACTIVE & NYANVDD_MONITOR_STATE_MASK) == NYANVDD_MONITOR_FLAG_ACTIVE,
+              "NYANVDD_MONITOR_FLAG_ACTIVE is not inside the state-bit range");
+        CHECK((NYANVDD_MONITOR_FLAG_ACTIVE & ~NYANVDD_MONITOR_STATE_MASK) == 0,
+              "NYANVDD_MONITOR_FLAG_ACTIVE leaks into the plug-flag range");
+
+        // A monitor plugged with HDR and reported active must decode as both,
+        // and the plug flags must survive a round-trip through the state mask.
+        const UINT32 Combined = NYANVDD_PLUG_FLAG_HDR10 | NYANVDD_MONITOR_FLAG_ACTIVE;
+        CHECK((Combined & NYANVDD_PLUG_FLAG_HDR10) != 0, "plug flag lost when combined with state");
+        CHECK((Combined & NYANVDD_MONITOR_FLAG_ACTIVE) != 0, "state bit lost when combined");
+        CHECK((Combined & ~NYANVDD_MONITOR_STATE_MASK) == NYANVDD_PLUG_FLAG_HDR10,
+              "masking off the state bits does not recover exactly the plug flags");
+    }
+
     // The plug range advertised to clients must be the range the driver enforces.
     void TestAdvertisedPlugRange()
     {
@@ -511,6 +532,7 @@ int main()
 {
     TestContainerIdCorrelation();
     TestEdidIdentityConstants();
+    TestMonitorFlagNamespaces();
     TestAdvertisedPlugRange();
     TestSupportedModePredicate();
     TestEdidStructure();

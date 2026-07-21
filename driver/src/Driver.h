@@ -76,6 +76,7 @@ namespace nyan
         {
             bool Used = false;          // slot reserved (plug in progress or live)
             bool Arrived = false;       // IddCxMonitorArrival succeeded
+            bool Active = false;        // the OS committed a display path for it
             NYANVDD_PLUG_IN Params = {};
             IDDCX_MONITOR Monitor = nullptr;
             BYTE Edid[128] = {};
@@ -96,6 +97,14 @@ namespace nyan
             NTSTATUS Plug(const NYANVDD_PLUG_IN& In, _Out_ UINT32* ConnectorIndexOut);
             NTSTATUS Unplug(UINT32 Cookie); // 0 = all
             void List(_Out_ NYANVDD_LIST_OUT* Out);
+
+            // Records which monitors the OS is actually driving, from the
+            // committed display paths. Monitors absent from the list are
+            // marked inactive, which tells a client the OS has not attached
+            // the monitor to a desktop (as opposed to having attached it to a
+            // desktop the client's session cannot see — see the note on
+            // NYANVDD_MONITOR_FLAG_ACTIVE).
+            void SetActiveMonitors(const IDDCX_MONITOR* Monitors, UINT32 Count);
             void FillStatus(_Out_ NYANVDD_STATUS_OUT* Out);
             NTSTATUS SetWatchdog(UINT32 TimeoutMs);
             void PetWatchdog();
