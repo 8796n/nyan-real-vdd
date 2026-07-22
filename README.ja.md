@@ -1,8 +1,9 @@
-# nyan Real VDD
+# nyan Real Virtual Display Driver
 
-nyan Real / Spatial Wall（XRグラス向け 3DoF 空間ウォール）のための
-仮想ディスプレイドライバー（Windows IddCx indirect display driver）。
-スクリプタブルな仮想モニターが必要な用途なら単体でも使えます。
+nyan Real の仮想ディスプレイドライバー（Windows IddCx indirect display
+driver）。Spatial Wall（XRグラス向け 3DoF 空間ウォール）のために作られて
+いますが、スクリプタブルな仮想モニターが必要な用途なら単体でも使えます。
+ファイル名・ツール名の「nyanvdd」はこのドライバーの略記です。
 
 English: [README.md](README.md)
 

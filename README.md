@@ -1,9 +1,9 @@
-# nyan Real VDD
+# nyan Real Virtual Display Driver
 
-A virtual display driver (Windows IddCx indirect display driver) built for
-[nyan Real / Spatial Wall](https://github.com/8796n) — a 3DoF spatial wall for
-XR glasses — and usable standalone by anything that needs scriptable virtual
-monitors.
+A virtual display driver (Windows IddCx indirect display driver) from
+[nyan Real](https://github.com/8796n), built for its Spatial Wall — a 3DoF
+spatial wall for XR glasses — and usable standalone by anything that needs
+scriptable virtual monitors. "nyanvdd" in file and tool names is this driver.
 
 日本語版は [README.ja.md](README.ja.md) へ。
 

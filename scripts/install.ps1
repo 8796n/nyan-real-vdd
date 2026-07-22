@@ -1,4 +1,5 @@
-# Installs the nyan Real VDD on this machine (run as Administrator):
+# Installs the nyan Real Virtual Display Driver on this machine (run as
+# Administrator):
 #   1. trusts the publisher certificate (Root + TrustedPublisher)
 #   2. stages/installs the driver package (pnputil)
 #   3. creates the persistent device node (nyanvddctl install-device)

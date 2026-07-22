@@ -86,8 +86,8 @@ $Signer = $CatSignature.SignerCertificate
 $SignerLine = if ($Signer) { "$($Signer.Subject)  (thumbprint $($Signer.Thumbprint))" } else { 'unknown' }
 
 @"
-nyan Real VDD - portable package ($Build)
-============================================
+nyan Real Virtual Display Driver - portable package ($Build)
+============================================================
 
 A virtual display driver for Windows 11 24H2 and later (x64).
 Source and issues: https://github.com/8796n/nyan-real-vdd
@@ -150,8 +150,8 @@ if ($Iscc) {
     # scripts out of an unpacked folder, which is wrong once Setup has done it.
     $InstalledReadme = Join-Path $OutDir 'README-installed.txt'
     @"
-nyan Real VDD ($Build)
-======================
+nyan Real Virtual Display Driver ($Build)
+=========================================
 
 Installed. https://github.com/8796n/nyan-real-vdd
 
@@ -159,16 +159,16 @@ USE IT
 ------
 nyanvddctl.exe lives in this folder. From any normal (non-elevated) prompt:
 
-    "%ProgramFiles%\nyan Real VDD\nyanvddctl.exe" status
-    "%ProgramFiles%\nyan Real VDD\nyanvddctl.exe" plug 1920x1080@120
-    "%ProgramFiles%\nyan Real VDD\nyanvddctl.exe" resolve
-    "%ProgramFiles%\nyan Real VDD\nyanvddctl.exe" unplug all
+    "%ProgramFiles%\nyan Real Virtual Display Driver\nyanvddctl.exe" status
+    "%ProgramFiles%\nyan Real Virtual Display Driver\nyanvddctl.exe" plug 1920x1080@120
+    "%ProgramFiles%\nyan Real Virtual Display Driver\nyanvddctl.exe" resolve
+    "%ProgramFiles%\nyan Real Virtual Display Driver\nyanvddctl.exe" unplug all
 
 Adding and removing monitors does not need administrator rights.
 
 REMOVE IT
 ---------
-Settings > Apps > Installed apps > nyan Real VDD > Uninstall.
+Settings > Apps > Installed apps > nyan Real (Virtual Display Driver) > Uninstall.
 That also removes the driver and the signing certificate below.
 
 WHAT THIS MACHINE NOW TRUSTS

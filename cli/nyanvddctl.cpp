@@ -31,7 +31,7 @@ namespace
     void PrintUsage()
     {
         wprintf(
-            L"nyanvddctl — nyan Real Virtual Display control tool\n"
+            L"nyanvddctl — nyan Real Virtual Display Driver control tool\n"
             L"\n"
             L"  nyanvddctl install-device        create the persistent VDD device node\n"
             L"  nyanvddctl remove-device         remove the VDD device node\n"

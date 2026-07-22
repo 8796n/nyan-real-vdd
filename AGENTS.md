@@ -1,6 +1,8 @@
 # リポジトリ・ガイド（エージェント / コントリビュータ向け）
 
-nyan Real VDD — Spatial Wall 用の IddCx 仮想ディスプレイドライバー。
+正式名称「nyan Real / Virtual Display Driver」— Spatial Wall 用の IddCx
+仮想ディスプレイドライバー。表示名は「nyan Real (Virtual Display Driver)」、
+技術識別子（nyanvdd / NYANVDD_* / HWID / リポジトリ名）は略記のまま変えない。
 **GitHub 公開リポジトリ（履歴込み）**。obs-3dof とは独立に回す。
 
 > このファイルは [`AGENTS.md`](AGENTS.md) と同じ内容を保つ。片方を編集したら

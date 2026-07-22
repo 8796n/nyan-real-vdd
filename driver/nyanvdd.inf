@@ -1,5 +1,5 @@
 ;
-; nyanvdd.inf — nyan Real Virtual Display (IddCx indirect display driver)
+; nyanvdd.inf — nyan Real Virtual Display Driver (IddCx indirect display driver)
 ;
 ; The device is root-enumerated software device created by the client
 ; (nyanvddctl install-device / Spatial Wall) via SwDeviceCreate with
@@ -73,7 +73,7 @@ nyanvdd.dll
 
 [Strings]
 ManufacturerName="nyan Real"
-DiskName = "nyan Real Virtual Display Installation Disk"
+DiskName = "nyan Real Virtual Display Driver Installation Disk"
 DeviceName="nyan Real Virtual Display Adapter"
 
 REG_MULTI_SZ  = 0x00010000

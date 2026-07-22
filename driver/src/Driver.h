@@ -1,4 +1,5 @@
-// nyan Real VDD — IddCx indirect display driver for Spatial Wall.
+// nyan Real Virtual Display Driver — an IddCx indirect display driver,
+// built for nyan Real (Spatial Wall).
 //
 // Portions derived from the Microsoft Windows-driver-samples IndirectDisplay
 // sample (MIT License, Copyright (c) Microsoft Corporation).

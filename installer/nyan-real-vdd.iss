@@ -1,4 +1,4 @@
-; Inno Setup script for the nyan Real VDD driver package.
+; Inno Setup script for the nyan Real Virtual Display Driver package.
 ;
 ; scripts\package.ps1 stages the portable payload (driver package, certificate,
 ; nyanvddctl and the install/uninstall scripts) and passes its path via
@@ -24,16 +24,18 @@
 
 [Setup]
 AppId={{9C74A1AB-C7A0-402A-8811-1593BF3D1E11}
-AppName=nyan Real VDD
+; Brand (Product) — the same two-layer naming as "nyan Real (Spatial Wall)".
+AppName=nyan Real (Virtual Display Driver)
 ; AppVersion is what upgrade checks compare, so it stays a plain a.b.c number;
 ; the commit lives in AppVerName and the file name instead.
 AppVersion={#AppVersion}
-AppVerName=nyan Real VDD {#BuildId}
+AppVerName=nyan Real (Virtual Display Driver) {#BuildId}
 VersionInfoVersion={#AppVersion}
 AppPublisher=8796n
 AppPublisherURL=https://github.com/8796n/nyan-real-vdd
-DefaultDirName={autopf}\nyan Real VDD
-DefaultGroupName=nyan Real VDD
+DefaultDirName={autopf}\nyan Real Virtual Display Driver
+; Shared brand group: Spatial Wall's shortcuts live in "nyan Real" too.
+DefaultGroupName=nyan Real
 DisableProgramGroupPage=yes
 ; A driver is machine-wide: this cannot be a per-user install.
 PrivilegesRequired=admin
@@ -50,7 +52,7 @@ OutputBaseFilename=nyan-real-vdd-{#BuildId}-windows-x64-installer
 WizardStyle=modern
 Compression=lzma2
 SolidCompression=yes
-UninstallDisplayName=nyan Real VDD
+UninstallDisplayName=nyan Real (Virtual Display Driver)
 
 [Languages]
 Name: "en"; MessagesFile: "compiler:Default.isl"
@@ -85,8 +87,8 @@ Source: "{#StageDir}\nyanvddctl.exe"; Flags: dontcopy
 Source: "{#StageDir}\install.ps1"; Flags: dontcopy
 
 [Icons]
-Name: "{group}\nyan Real VDD README"; Filename: "{app}\README.txt"
-Name: "{group}\{cm:UninstallProgram,nyan Real VDD}"; Filename: "{uninstallexe}"
+Name: "{group}\Virtual Display Driver README"; Filename: "{app}\README.txt"
+Name: "{group}\{cm:UninstallProgram,nyan Real (Virtual Display Driver)}"; Filename: "{uninstallexe}"
 
 [Code]
 var

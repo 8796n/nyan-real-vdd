@@ -1,4 +1,5 @@
-# Removes the nyan Real VDD from this machine (run as Administrator):
+# Removes the nyan Real Virtual Display Driver from this machine (run as
+# Administrator):
 # unplugs monitors, removes the device node, deletes every staged copy of the
 # driver package, and (with -RemoveCert) untrusts the publisher certificate.
 #

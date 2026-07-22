@@ -19,7 +19,7 @@ BEGIN
             VALUE "InternalName", "nyanvdd"
             VALUE "LegalCopyright", "(c) nyan Real. MIT License."
             VALUE "OriginalFilename", "nyanvdd.dll"
-            VALUE "ProductName", "nyan Real Spatial Wall"
+            VALUE "ProductName", "nyan Real Virtual Display Driver"
             VALUE "ProductVersion", "0.1.0.0"
         END
     END

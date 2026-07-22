@@ -1,4 +1,5 @@
-// nyan Real VDD — IddCx indirect display driver for Spatial Wall.
+// nyan Real Virtual Display Driver — an IddCx indirect display driver,
+// built for nyan Real (Spatial Wall).
 //
 // Portions derived from the Microsoft Windows-driver-samples IndirectDisplay
 // sample (MIT License, Copyright (c) Microsoft Corporation).
@@ -566,9 +567,9 @@ void IndirectDeviceContext::InitAdapter()
     AdapterCaps.EndPointDiagnostics.GammaSupport = IDDCX_FEATURE_IMPLEMENTATION_NONE;
     AdapterCaps.EndPointDiagnostics.TransmissionType = IDDCX_TRANSMISSION_TYPE_WIRED_OTHER;
 
-    AdapterCaps.EndPointDiagnostics.pEndPointFriendlyName = L"nyan Real Virtual Display";
+    AdapterCaps.EndPointDiagnostics.pEndPointFriendlyName = L"nyan Real Virtual Display Driver";
     AdapterCaps.EndPointDiagnostics.pEndPointManufacturerName = L"nyan Real";
-    AdapterCaps.EndPointDiagnostics.pEndPointModelName = L"Spatial Wall VDD";
+    AdapterCaps.EndPointDiagnostics.pEndPointModelName = L"Virtual Display Driver";
 
     IDDCX_ENDPOINT_VERSION Version2 = {};
     Version2.Size = sizeof(Version2);

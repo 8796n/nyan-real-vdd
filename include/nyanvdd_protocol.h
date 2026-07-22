@@ -1,4 +1,4 @@
-// nyan Real VDD — public control protocol
+// nyan Real Virtual Display Driver — public control protocol
 //
 // This header is the single source of truth for the contract between the
 // nyanvdd driver and its clients (Spatial Wall, nyanvddctl, third parties).
