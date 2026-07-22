@@ -19,32 +19,9 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $OutDir = Join-Path $RepoRoot 'out'
 
-if (-not $SkipBuild) {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'build.ps1') -Configuration $Configuration
-    if ($LASTEXITCODE -ne 0) { throw 'build failed' }
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'sign-dev.ps1')
-    if ($LASTEXITCODE -ne 0) { throw 'signing failed' }
-}
-
-# Drop artifacts from earlier revisions: leaving them here is how you end up
-# testing a stale installer that happens to sort first.
-Get-ChildItem $OutDir -Filter 'nyan-real-vdd-*' -ErrorAction SilentlyContinue |
-    Where-Object { $_.Extension -in '.zip', '.exe' } |
-    Remove-Item -Force
-
-$PackageSrc = Join-Path $OutDir 'package'
-$Cer = Join-Path $OutDir 'nyanvdd-dev.cer'
-$Ctl = Join-Path $OutDir 'nyanvddctl.exe'
-foreach ($Required in (Join-Path $PackageSrc 'nyanvdd.inf'), (Join-Path $PackageSrc 'nyanvdd.cat'), $Cer, $Ctl) {
-    if (-not (Test-Path $Required)) { throw "missing: $Required (run without -SkipBuild)" }
-}
-
-# Refuse to ship an unsigned catalog: on the target machine that fails at
-# install time with a much less obvious error.
-$CatSignature = Get-AuthenticodeSignature (Join-Path $PackageSrc 'nyanvdd.cat')
-if ($CatSignature.Status -ne 'Valid' -and $CatSignature.Status -ne 'UnknownError') {
-    throw "nyanvdd.cat is not signed (status: $($CatSignature.Status)) — run scripts\sign-dev.ps1"
-}
+# Everything that can be checked without side effects is checked first, so a
+# bad input fails in a second instead of after a build — and, more importantly,
+# without having already deleted the previous good artifacts.
 
 # A real version number, not the commit hash: it ends up in Add/Remove
 # Programs and is what upgrade checks compare, and Inno falls back to 0.0.0.0
@@ -68,7 +45,35 @@ $Build = "$Version+g$Revision"
 $Name = "nyan-real-vdd-$Build-x64"
 $Staging = Join-Path $OutDir $Name
 
-if (Test-Path $Staging) { Remove-Item $Staging -Recurse -Force }
+if (-not $SkipBuild) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'build.ps1') -Configuration $Configuration
+    if ($LASTEXITCODE -ne 0) { throw 'build failed' }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'sign-dev.ps1')
+    if ($LASTEXITCODE -ne 0) { throw 'signing failed' }
+}
+
+$PackageSrc = Join-Path $OutDir 'package'
+$Cer = Join-Path $OutDir 'nyanvdd-dev.cer'
+$Ctl = Join-Path $OutDir 'nyanvddctl.exe'
+foreach ($Required in (Join-Path $PackageSrc 'nyanvdd.inf'), (Join-Path $PackageSrc 'nyanvdd.cat'), $Cer, $Ctl) {
+    if (-not (Test-Path $Required)) { throw "missing: $Required (run without -SkipBuild)" }
+}
+
+# Refuse to ship an unsigned catalog: on the target machine that fails at
+# install time with a much less obvious error.
+$CatSignature = Get-AuthenticodeSignature (Join-Path $PackageSrc 'nyanvdd.cat')
+if ($CatSignature.Status -ne 'Valid' -and $CatSignature.Status -ne 'UnknownError') {
+    throw "nyanvdd.cat is not signed (status: $($CatSignature.Status)) — run scripts\sign-dev.ps1"
+}
+
+# Everything above here can fail without having destroyed anything. From this
+# point on we start replacing artifacts, so drop the ones from earlier builds:
+# staging folders as well as archives, because a leftover folder is just as
+# good at making you test something you did not build.
+Get-ChildItem $OutDir -Filter 'nyan-real-vdd-*' -ErrorAction SilentlyContinue |
+    Where-Object { $_.PSIsContainer -or $_.Extension -in '.zip', '.exe' } |
+    Remove-Item -Recurse -Force
+
 New-Item -ItemType Directory -Force $Staging | Out-Null
 
 Copy-Item (Join-Path $PackageSrc '*') $Staging -Force
