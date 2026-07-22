@@ -57,8 +57,16 @@ namespace nyan
         class SwapChainProcessor
         {
         public:
-            SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, std::shared_ptr<Direct3DDevice> Device, HANDLE NewFrameEvent);
+            SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, std::unique_ptr<Direct3DDevice> Device, HANDLE NewFrameEvent);
             ~SwapChainProcessor();
+
+            SwapChainProcessor(const SwapChainProcessor&) = delete;
+            SwapChainProcessor& operator=(const SwapChainProcessor&) = delete;
+
+            // Starts the processing thread after construction so allocation
+            // and Win32 handle failures can be reported without leaving an
+            // assigned swap-chain unowned.
+            HRESULT Start();
 
         private:
             static DWORD CALLBACK RunThread(LPVOID Argument);
@@ -66,7 +74,7 @@ namespace nyan
             void RunCore();
 
             IDDCX_SWAPCHAIN m_hSwapChain;
-            std::shared_ptr<Direct3DDevice> m_Device;
+            std::unique_ptr<Direct3DDevice> m_Device;
             HANDLE m_hAvailableBufferEvent;
             HANDLE m_hThread = nullptr;
             HANDLE m_hTerminateEvent = nullptr;
@@ -148,22 +156,21 @@ namespace nyan
             HANDLE m_WatchdogThread = nullptr;
             HANDLE m_WatchdogWake = nullptr;   // auto-reset: re-evaluate now
             HANDLE m_WatchdogStop = nullptr;   // manual-reset: thread exit
-            volatile UINT32 m_WatchdogTimeoutMs = 0;
-            volatile ULONGLONG m_WatchdogDeadline = 0;
+            UINT32 m_WatchdogTimeoutMs = 0;
+            ULONGLONG m_WatchdogDeadline = 0;
         };
 
         /// Per-monitor state attached to the IDDCX_MONITOR object.
         class IndirectMonitorContext
         {
         public:
-            IndirectMonitorContext(_In_ IDDCX_MONITOR Monitor);
+            IndirectMonitorContext() = default;
             ~IndirectMonitorContext();
 
             void AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent);
             void UnassignSwapChain();
 
         private:
-            IDDCX_MONITOR m_Monitor;
             std::unique_ptr<SwapChainProcessor> m_ProcessingThread;
         };
     }

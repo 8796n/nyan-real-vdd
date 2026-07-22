@@ -23,6 +23,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <new>
 
 using namespace std;
 using namespace nyan::vdd;
@@ -310,7 +311,11 @@ NTSTATUS NyanVddDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT pDeviceInit)
     }
 
     auto* pContext = WdfObjectGet_IndirectDeviceContextWrapper(Device);
-    pContext->pContext = new IndirectDeviceContext(Device);
+    pContext->pContext = new (nothrow) IndirectDeviceContext(Device);
+    if (!pContext->pContext)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
 
     return Status;
 }
@@ -363,23 +368,52 @@ HRESULT Direct3DDevice::Init()
 
 #pragma region SwapChainProcessor
 
-SwapChainProcessor::SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, shared_ptr<Direct3DDevice> Device, HANDLE NewFrameEvent)
-    : m_hSwapChain(hSwapChain), m_Device(Device), m_hAvailableBufferEvent(NewFrameEvent)
+SwapChainProcessor::SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, unique_ptr<Direct3DDevice> Device, HANDLE NewFrameEvent)
+    : m_hSwapChain(hSwapChain), m_Device(move(Device)), m_hAvailableBufferEvent(NewFrameEvent)
 {
-    m_hTerminateEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    m_hThread = CreateThread(nullptr, 0, RunThread, this, 0, nullptr);
 }
 
 SwapChainProcessor::~SwapChainProcessor()
 {
-    SetEvent(m_hTerminateEvent);
+    if (m_hTerminateEvent)
+    {
+        SetEvent(m_hTerminateEvent);
+    }
 
     if (m_hThread)
     {
         WaitForSingleObject(m_hThread, INFINITE);
         CloseHandle(m_hThread);
     }
-    CloseHandle(m_hTerminateEvent);
+    if (m_hTerminateEvent)
+    {
+        CloseHandle(m_hTerminateEvent);
+    }
+}
+
+HRESULT SwapChainProcessor::Start()
+{
+    if (m_hThread || m_hTerminateEvent)
+    {
+        return HRESULT_FROM_WIN32(ERROR_ALREADY_INITIALIZED);
+    }
+
+    m_hTerminateEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!m_hTerminateEvent)
+    {
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    m_hThread = CreateThread(nullptr, 0, RunThread, this, 0, nullptr);
+    if (!m_hThread)
+    {
+        const HRESULT Hr = HRESULT_FROM_WIN32(GetLastError());
+        CloseHandle(m_hTerminateEvent);
+        m_hTerminateEvent = nullptr;
+        return Hr;
+    }
+
+    return S_OK;
 }
 
 DWORD CALLBACK SwapChainProcessor::RunThread(LPVOID Argument)
@@ -412,7 +446,10 @@ void SwapChainProcessor::Run()
     WdfObjectDelete((WDFOBJECT)m_hSwapChain);
     m_hSwapChain = nullptr;
 
-    AvRevertMmThreadCharacteristics(AvTaskHandle);
+    if (AvTaskHandle)
+    {
+        AvRevertMmThreadCharacteristics(AvTaskHandle);
+    }
 }
 
 void SwapChainProcessor::RunCore()
@@ -767,7 +804,7 @@ NTSTATUS IndirectDeviceContext::CreateAndArriveMonitor(UINT ConnectorIndex)
     MonitorCreate.ObjectAttributes = &Attr;
     MonitorCreate.pMonitorInfo = &MonitorInfo;
 
-    IDARG_OUT_MONITORCREATE MonitorCreateOut;
+    IDARG_OUT_MONITORCREATE MonitorCreateOut = {};
     NTSTATUS Status = IddCxMonitorCreate(m_Adapter, &MonitorCreate, &MonitorCreateOut);
     if (!NT_SUCCESS(Status))
     {
@@ -776,9 +813,14 @@ NTSTATUS IndirectDeviceContext::CreateAndArriveMonitor(UINT ConnectorIndex)
     }
 
     auto* pMonitorContextWrapper = WdfObjectGet_IndirectMonitorContextWrapper(MonitorCreateOut.MonitorObject);
-    pMonitorContextWrapper->pContext = new IndirectMonitorContext(MonitorCreateOut.MonitorObject);
+    pMonitorContextWrapper->pContext = new (nothrow) IndirectMonitorContext();
+    if (!pMonitorContextWrapper->pContext)
+    {
+        WdfObjectDelete(MonitorCreateOut.MonitorObject);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
 
-    IDARG_OUT_MONITORARRIVAL ArrivalOut;
+    IDARG_OUT_MONITORARRIVAL ArrivalOut = {};
     Status = IddCxMonitorArrival(MonitorCreateOut.MonitorObject, &ArrivalOut);
     if (!NT_SUCCESS(Status))
     {
@@ -1020,17 +1062,33 @@ NTSTATUS IndirectDeviceContext::SetWatchdog(UINT32 TimeoutMs)
 
     if (TimeoutMs != 0 && !m_WatchdogThread)
     {
-        m_WatchdogWake = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-        m_WatchdogStop = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+        m_WatchdogWake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!m_WatchdogWake)
+        {
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+
+        m_WatchdogStop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!m_WatchdogStop)
+        {
+            CloseHandle(m_WatchdogWake);
+            m_WatchdogWake = nullptr;
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+
         m_WatchdogThread = CreateThread(nullptr, 0, WatchdogThread, this, 0, nullptr);
         if (!m_WatchdogThread)
         {
+            CloseHandle(m_WatchdogStop);
+            CloseHandle(m_WatchdogWake);
+            m_WatchdogStop = nullptr;
+            m_WatchdogWake = nullptr;
             return STATUS_INSUFFICIENT_RESOURCES;
         }
     }
 
     m_WatchdogTimeoutMs = TimeoutMs;
-    m_WatchdogDeadline = GetTickCount64() + TimeoutMs;
+    m_WatchdogDeadline = TimeoutMs ? GetTickCount64() + TimeoutMs : 0;
     if (m_WatchdogWake)
     {
         SetEvent(m_WatchdogWake);
@@ -1057,6 +1115,7 @@ void IndirectDeviceContext::ReleaseRealtimeGpuPriorityRef()
 
 void IndirectDeviceContext::PetWatchdog()
 {
+    lock_guard<mutex> Guard(m_Lock);
     if (m_WatchdogTimeoutMs != 0)
     {
         m_WatchdogDeadline = GetTickCount64() + m_WatchdogTimeoutMs;
@@ -1074,17 +1133,46 @@ void IndirectDeviceContext::WatchdogLoop()
     HANDLE WaitHandles[] = { m_WatchdogStop, m_WatchdogWake };
     for (;;)
     {
-        DWORD WaitResult = WaitForMultipleObjects(ARRAYSIZE(WaitHandles), WaitHandles, FALSE, 1000);
+        bool Fired = false;
+        DWORD WaitTimeout = INFINITE;
+        {
+            lock_guard<mutex> Guard(m_Lock);
+            if (m_WatchdogTimeoutMs != 0)
+            {
+                const ULONGLONG Now = GetTickCount64();
+                if (Now >= m_WatchdogDeadline)
+                {
+                    m_WatchdogTimeoutMs = 0;
+                    m_WatchdogDeadline = 0;
+                    Fired = true;
+                }
+                else
+                {
+                    const ULONGLONG Remaining = m_WatchdogDeadline - Now;
+                    WaitTimeout = Remaining >= MAXDWORD
+                        ? MAXDWORD - 1
+                        : static_cast<DWORD>(Remaining);
+                }
+            }
+        }
+
+        if (Fired)
+        {
+            NYVDD_LOG(L"Watchdog fired — unplugging all monitors");
+            Unplug(0);
+            continue;
+        }
+
+        const DWORD WaitResult = WaitForMultipleObjects(
+            ARRAYSIZE(WaitHandles), WaitHandles, FALSE, WaitTimeout);
         if (WaitResult == WAIT_OBJECT_0)
         {
             return; // device teardown
         }
-
-        if (m_WatchdogTimeoutMs != 0 && GetTickCount64() > m_WatchdogDeadline)
+        if (WaitResult != WAIT_OBJECT_0 + 1 && WaitResult != WAIT_TIMEOUT)
         {
-            NYVDD_LOG(L"Watchdog fired — unplugging all monitors");
-            m_WatchdogTimeoutMs = 0;
-            Unplug(0);
+            NYVDD_LOG(L"Watchdog wait failed: %u", GetLastError());
+            return;
         }
     }
 }
@@ -1092,11 +1180,6 @@ void IndirectDeviceContext::WatchdogLoop()
 #pragma endregion
 
 #pragma region IndirectMonitorContext
-
-IndirectMonitorContext::IndirectMonitorContext(_In_ IDDCX_MONITOR Monitor) :
-    m_Monitor(Monitor)
-{
-}
 
 IndirectMonitorContext::~IndirectMonitorContext()
 {
@@ -1107,15 +1190,40 @@ void IndirectMonitorContext::AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID Ren
 {
     m_ProcessingThread.reset();
 
-    auto Device = make_shared<Direct3DDevice>(RenderAdapter);
-    if (FAILED(Device->Init()))
+    unique_ptr<Direct3DDevice> Device(new (nothrow) Direct3DDevice(RenderAdapter));
+    if (!Device)
+    {
+        NYVDD_LOG(L"Failed to allocate Direct3D device context");
+        WdfObjectDelete(SwapChain);
+        return;
+    }
+
+    const HRESULT DeviceHr = Device->Init();
+    if (FAILED(DeviceHr))
     {
         // Delete the swap-chain so the OS generates a new one and retries.
+        NYVDD_LOG(L"Direct3D device initialization failed: 0x%08X", DeviceHr);
         WdfObjectDelete(SwapChain);
     }
     else
     {
-        m_ProcessingThread.reset(new SwapChainProcessor(SwapChain, Device, NewFrameEvent));
+        unique_ptr<SwapChainProcessor> Processor(
+            new (nothrow) SwapChainProcessor(SwapChain, move(Device), NewFrameEvent));
+        if (!Processor)
+        {
+            NYVDD_LOG(L"Failed to allocate swap-chain processor");
+            WdfObjectDelete(SwapChain);
+            return;
+        }
+
+        const HRESULT Hr = Processor->Start();
+        if (FAILED(Hr))
+        {
+            NYVDD_LOG(L"Failed to start swap-chain processor: 0x%08X", Hr);
+            WdfObjectDelete(SwapChain);
+            return;
+        }
+        m_ProcessingThread = move(Processor);
     }
 }
 
@@ -1128,6 +1236,27 @@ void IndirectMonitorContext::UnassignSwapChain()
 
 #pragma region DdiCallbacks
 
+template<typename TPath>
+static void RecordCommittedMonitors(
+    const wchar_t* CallbackName,
+    IndirectDeviceContext* Context,
+    const TPath* Paths,
+    UINT32 PathCount)
+{
+    IDDCX_MONITOR Active[NYANVDD_MAX_MONITORS];
+    UINT32 Count = 0;
+    for (UINT32 i = 0; i < PathCount && Count < ARRAYSIZE(Active); ++i)
+    {
+        if (Paths[i].Flags & IDDCX_PATH_FLAGS_ACTIVE)
+        {
+            Active[Count++] = Paths[i].MonitorObject;
+        }
+    }
+
+    NYVDD_LOG(L"%s: %u path(s), %u active", CallbackName, PathCount, Count);
+    Context->SetActiveMonitors(Active, Count);
+}
+
 _Use_decl_annotations_
 NTSTATUS NyanVddAdapterInitFinished(IDDCX_ADAPTER AdapterObject, const IDARG_IN_ADAPTER_INIT_FINISHED* pInArgs)
 {
@@ -1139,8 +1268,6 @@ NTSTATUS NyanVddAdapterInitFinished(IDDCX_ADAPTER AdapterObject, const IDARG_IN_
 _Use_decl_annotations_
 NTSTATUS NyanVddAdapterCommitModes(IDDCX_ADAPTER AdapterObject, const IDARG_IN_COMMITMODES* pInArgs)
 {
-    UNREFERENCED_PARAMETER(AdapterObject);
-
     // Nothing to reconfigure — swap-chains are managed by IddCx and this
     // device has no transport of its own — but this is the OS telling us which
     // monitors it actually drives, which is what LIST reports as ACTIVE.
@@ -1148,21 +1275,9 @@ NTSTATUS NyanVddAdapterCommitModes(IDDCX_ADAPTER AdapterObject, const IDARG_IN_C
     // Note this says nothing about which session can see the monitor: under
     // Remote Desktop the path is still committed and active on the console
     // desktop while the remote session cannot see the display at all.
-    IDDCX_MONITOR Active[NYANVDD_MAX_MONITORS];
-    UINT32 Count = 0;
-    for (UINT i = 0; i < pInArgs->PathCount && Count < ARRAYSIZE(Active); ++i)
-    {
-        if (pInArgs->pPaths[i].Flags & IDDCX_PATH_FLAGS_ACTIVE)
-        {
-            Active[Count++] = pInArgs->pPaths[i].MonitorObject;
-        }
-    }
-    NYVDD_LOG(L"CommitModes: %u path(s), %u active", pInArgs->PathCount, Count);
-
-    if (g_DeviceContext)
-    {
-        g_DeviceContext->SetActiveMonitors(Active, Count);
-    }
+    auto* ContextWrapper = WdfObjectGet_IndirectDeviceContextWrapper(AdapterObject);
+    RecordCommittedMonitors(
+        L"CommitModes", ContextWrapper->pContext, pInArgs->pPaths, pInArgs->PathCount);
     return STATUS_SUCCESS;
 }
 
@@ -1307,23 +1422,9 @@ NTSTATUS NyanVddMonitorQueryModes(IDDCX_MONITOR MonitorObject, const IDARG_IN_QU
 _Use_decl_annotations_
 NTSTATUS NyanVddAdapterCommitModes2(IDDCX_ADAPTER AdapterObject, const IDARG_IN_COMMITMODES2* pInArgs)
 {
-    UNREFERENCED_PARAMETER(AdapterObject);
-
-    IDDCX_MONITOR Active[NYANVDD_MAX_MONITORS];
-    UINT32 Count = 0;
-    for (UINT i = 0; i < pInArgs->PathCount && Count < ARRAYSIZE(Active); ++i)
-    {
-        if (pInArgs->pPaths[i].Flags & IDDCX_PATH_FLAGS_ACTIVE)
-        {
-            Active[Count++] = pInArgs->pPaths[i].MonitorObject;
-        }
-    }
-    NYVDD_LOG(L"CommitModes2: %u path(s), %u active", pInArgs->PathCount, Count);
-
-    if (g_DeviceContext)
-    {
-        g_DeviceContext->SetActiveMonitors(Active, Count);
-    }
+    auto* ContextWrapper = WdfObjectGet_IndirectDeviceContextWrapper(AdapterObject);
+    RecordCommittedMonitors(
+        L"CommitModes2", ContextWrapper->pContext, pInArgs->pPaths, pInArgs->PathCount);
     return STATUS_SUCCESS;
 }
 
