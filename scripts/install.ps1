@@ -11,10 +11,42 @@
 param(
     [string]$PackageDir = '',
     [string]$CerPath = '',
-    [switch]$SkipCert
+    [switch]$SkipCert,
+    # Where to record everything this script printed. The installer passes this
+    # so a failure during an unattended install leaves something to read.
+    [string]$LogPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Re-launch natively when started from a 32-bit host. Inno Setup's [Code] runs
+# 32-bit, so Exec('powershell.exe') gets the SysWOW64 copy, where %WINDIR%\
+# System32 is redirected and pnputil.exe does not exist at all (certutil does,
+# which makes the failure look like it comes from nowhere). Sysnative is the
+# alias that reaches the real System32 from a 32-bit process.
+if (-not [Environment]::Is64BitProcess -and [Environment]::Is64BitOperatingSystem) {
+    $Native = Join-Path $env:WINDIR 'Sysnative\WindowsPowerShell\v1.0\powershell.exe'
+    if (Test-Path $Native) {
+        $Forward = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+        foreach ($Entry in $PSBoundParameters.GetEnumerator()) {
+            if ($Entry.Value -is [switch]) {
+                if ($Entry.Value.IsPresent) { $Forward += "-$($Entry.Key)" }
+            } else {
+                $Forward += "-$($Entry.Key)"
+                $Forward += [string]$Entry.Value
+            }
+        }
+        & $Native @Forward
+        exit $LASTEXITCODE
+    }
+    throw 'running 32-bit on a 64-bit system and the native PowerShell was not found'
+}
+
+if ($LogPath) {
+    New-Item -ItemType Directory -Force (Split-Path -Parent $LogPath) | Out-Null
+    Start-Transcript -Path $LogPath -Force | Out-Null
+}
+try {
 
 # Portable package: the driver files live next to this script.
 $Portable = Test-Path (Join-Path $PSScriptRoot 'nyanvdd.inf')
@@ -68,5 +100,10 @@ if ($LASTEXITCODE -eq 3010) {
 if ($LASTEXITCODE -ne 0) { throw 'nyanvddctl install-device failed' }
 
 Write-Host ''
-Write-Host "OK — try: `"$Ctl`" plug 1920x1080@120"
+Write-Host "OK - try: `"$Ctl`" plug 1920x1080@120"
 Write-Host "         `"$Ctl`" resolve"
+
+}
+finally {
+    if ($LogPath) { Stop-Transcript | Out-Null }
+}

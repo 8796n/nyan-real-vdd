@@ -1,5 +1,6 @@
 # Produces a portable, signed package that can be copied to another machine
-# and installed there without the repo, the WDK, or a build.
+# and installed there without the repo, the WDK, or a build, plus an installer
+# .exe when Inno Setup is available.
 #
 # Signing happens here rather than in CI on purpose: the signing key must not
 # leave the developer's machine, and a package signed with a fresh key on every
@@ -106,3 +107,26 @@ Compress-Archive -Path (Join-Path $Staging '*') -DestinationPath $Zip
 Write-Host ''
 Write-Host "OK: $Zip"
 Get-ChildItem $Staging | ForEach-Object { Write-Host ("    {0,-22} {1,9:N0} bytes" -f $_.Name, $_.Length) }
+
+# Installer (Inno Setup), if ISCC is present. The installer lays down the same
+# staged payload and runs the same install.ps1, so it is packaging only.
+$Iscc = @(
+    "${env:ProgramFiles}\Inno Setup 7\ISCC.exe",
+    "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+    "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if ($Iscc) {
+    $Iss = Join-Path $RepoRoot 'installer\nyan-real-vdd.iss'
+    & $Iscc "/DAppVersion=$Revision" "/DStageDir=$Staging" "/O$OutDir" $Iss | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+
+    $Setup = Join-Path $OutDir "nyan-real-vdd-$Revision-windows-x64-installer.exe"
+    Write-Host ''
+    Write-Host "OK: $Setup"
+    Write-Host '    (unsigned: sign it before handing it to anyone else, or'
+    Write-Host '     SmartScreen will warn on first run)'
+} else {
+    Write-Warning 'Inno Setup (ISCC.exe) not found - skipped the installer (portable ZIP still built).'
+}

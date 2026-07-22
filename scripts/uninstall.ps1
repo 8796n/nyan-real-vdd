@@ -6,10 +6,36 @@
 
 param(
     [switch]$RemoveCert,
-    [string]$CertSubject = 'CN=nyan Real Driver Publisher'
+    [string]$CertSubject = 'CN=nyan Real Driver Publisher',
+    [string]$LogPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
+
+# See install.ps1: a 32-bit host cannot see pnputil.exe at all.
+if (-not [Environment]::Is64BitProcess -and [Environment]::Is64BitOperatingSystem) {
+    $Native = Join-Path $env:WINDIR 'Sysnative\WindowsPowerShell\v1.0\powershell.exe'
+    if (Test-Path $Native) {
+        $Forward = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+        foreach ($Entry in $PSBoundParameters.GetEnumerator()) {
+            if ($Entry.Value -is [switch]) {
+                if ($Entry.Value.IsPresent) { $Forward += "-$($Entry.Key)" }
+            } else {
+                $Forward += "-$($Entry.Key)"
+                $Forward += [string]$Entry.Value
+            }
+        }
+        & $Native @Forward
+        exit $LASTEXITCODE
+    }
+    throw 'running 32-bit on a 64-bit system and the native PowerShell was not found'
+}
+
+if ($LogPath) {
+    New-Item -ItemType Directory -Force (Split-Path -Parent $LogPath) | Out-Null
+    Start-Transcript -Path $LogPath -Force | Out-Null
+}
+try {
 
 $Portable = Test-Path (Join-Path $PSScriptRoot 'nyanvdd.inf')
 if ($Portable) {
@@ -42,7 +68,9 @@ if ($Staged.Count -eq 0) {
     foreach ($Driver in $Staged) {
         $Oem = Split-Path $Driver.Driver -Leaf
         Write-Host "deleting driver package $Oem"
-        pnputil /delete-driver $Oem /uninstall /force
+        # No /force: pnputil reports that it ignores /force when deleting with
+        # /uninstall, and it would only mask a package that is still in use.
+        pnputil /delete-driver $Oem /uninstall
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "pnputil /delete-driver $Oem failed ($LASTEXITCODE)"
         }
@@ -60,4 +88,9 @@ if ($RemoveCert) {
     }
 }
 
-Write-Host 'OK — uninstalled'
+Write-Host 'OK - uninstalled'
+
+}
+finally {
+    if ($LogPath) { Stop-Transcript | Out-Null }
+}
