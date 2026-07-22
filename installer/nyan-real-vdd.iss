@@ -26,7 +26,10 @@ DefaultGroupName=nyan Real VDD
 DisableProgramGroupPage=yes
 ; A driver is machine-wide: this cannot be a per-user install.
 PrivilegesRequired=admin
-ArchitecturesAllowed=x64compatible
+; x64os, not x64compatible: the latter also matches ARM64, which can emulate
+; x64 user-mode code but cannot load an x64 driver. The Inno docs name device
+; drivers as the reason x64os exists.
+ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64compatible
 ; The INF only binds on Windows 11 24H2 and later. Refusing here gives a clear
 ; message instead of a device node that never gets a driver.
@@ -43,6 +46,16 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+; The same payload kept inside Setup, extracted to {tmp} during "Preparing to
+; Install". Registering the driver from there is what lets a failure abort the
+; install with a non-zero exit code; see PrepareToInstall below.
+Source: "{#StageDir}\nyanvdd.inf"; Flags: dontcopy
+Source: "{#StageDir}\nyanvdd.cat"; Flags: dontcopy
+Source: "{#StageDir}\nyanvdd.dll"; Flags: dontcopy
+Source: "{#StageDir}\nyanvdd-dev.cer"; Flags: dontcopy
+Source: "{#StageDir}\nyanvddctl.exe"; Flags: dontcopy
+Source: "{#StageDir}\install.ps1"; Flags: dontcopy
 
 [Icons]
 Name: "{group}\nyan Real VDD README"; Filename: "{app}\README.txt"
@@ -80,33 +93,51 @@ begin
     Result := Result + ' ' + Args;
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
+// Registering the driver happens here, before any file is committed, because
+// this is where a failure can still reach Setup's exit code: returning a
+// non-empty string aborts the install, and Setup exits with 7 ("Preparing to
+// Install determined that Setup cannot proceed") instead of 0. Verified by
+// forcing install.ps1 to fail: exit code 7, nothing left behind.
+//
+// Handling it in ssPostInstall instead would report success for a driver that
+// was never registered — Setup has no API to set its own exit code there —
+// and once message boxes are suppressed there would be no signal at all.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
+  Started: Boolean;
 begin
-  if CurStep <> ssPostInstall then
+  Result := '';
+
+  // install.ps1 finds the driver files next to itself (its portable layout),
+  // so the whole payload has to land in {tmp} together.
+  ExtractTemporaryFile('nyanvdd.inf');
+  ExtractTemporaryFile('nyanvdd.cat');
+  ExtractTemporaryFile('nyanvdd.dll');
+  ExtractTemporaryFile('nyanvdd-dev.cer');
+  ExtractTemporaryFile('nyanvddctl.exe');
+  ExtractTemporaryFile('install.ps1');
+
+  Started := Exec(NativePowerShell,
+                  '-NoProfile -ExecutionPolicy Bypass -File "' +
+                  ExpandConstant('{tmp}\install.ps1') + '"' +
+                  ' -LogPath "' + LogPathFor('install') + '"',
+                  ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  if Started and (ResultCode = 0) then
     Exit;
 
-  // install.ps1 trusts the signing certificate, stages the driver with
-  // pnputil and creates the device node.
-  if (not Exec(NativePowerShell, ScriptCommand('install.ps1', 'install', ''), '',
-               SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-  begin
-    // The files are installed, so this is recoverable by hand: say exactly how
-    // rather than rolling back and hiding the reason. SuppressibleMsgBox, not
-    // MsgBox, so /SUPPRESSMSGBOXES really suppresses it and an unattended
-    // install cannot block on a dialog nobody is there to click.
-    SuppressibleMsgBox('The files were installed, but registering the driver failed'
-           + #13#10 + '(exit code ' + IntToStr(ResultCode) + ').'
-           + #13#10 + #13#10
-           + 'What happened is recorded in:'
-           + #13#10 + LogPathFor('install')
-           + #13#10 + #13#10
-           + 'To retry, run this from an elevated PowerShell:'
-           + #13#10 + 'powershell -NoProfile -ExecutionPolicy Bypass -File "'
-           + ExpandConstant('{app}\install.ps1') + '"',
-           mbError, MB_OK, IDOK);
-  end;
+  // Exec's ResultCode means two different things: a Windows error when the
+  // process could not be started at all, and the child's exit code when it
+  // could. Reporting both as "exit code N" would make the message a lie.
+  if Started then
+    Result := 'Registering the driver failed (install.ps1 exited with code ' +
+              IntToStr(ResultCode) + ').'
+  else
+    Result := 'Registering the driver failed (PowerShell could not be started, ' +
+              'Windows error ' + IntToStr(ResultCode) + ').';
+
+  Result := Result + #13#10 + 'Details: ' + LogPathFor('install');
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -118,10 +149,13 @@ begin
   if CurUninstallStep <> usUninstall then
     Exit;
 
+  // Deliberately NOT RaiseException here, unlike the install side: aborting an
+  // uninstall would leave the product permanently uninstallable. Report and
+  // keep going, so the files at least go away.
   if (not Exec(NativePowerShell, ScriptCommand('uninstall.ps1', 'uninstall', '-RemoveCert'), '',
                SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
   begin
-    SuppressibleMsgBox('Removing the driver failed (exit code ' + IntToStr(ResultCode) + ').'
+    SuppressibleMsgBox('Removing the driver failed (code ' + IntToStr(ResultCode) + ').'
            + #13#10 + #13#10
            + 'Details: ' + LogPathFor('uninstall')
            + #13#10 + #13#10

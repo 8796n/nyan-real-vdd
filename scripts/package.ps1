@@ -26,6 +26,12 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { throw 'signing failed' }
 }
 
+# Drop artifacts from earlier revisions: leaving them here is how you end up
+# testing a stale installer that happens to sort first.
+Get-ChildItem $OutDir -Filter 'nyan-real-vdd-*' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in '.zip', '.exe' } |
+    Remove-Item -Force
+
 $PackageSrc = Join-Path $OutDir 'package'
 $Cer = Join-Path $OutDir 'nyanvdd-dev.cer'
 $Ctl = Join-Path $OutDir 'nyanvddctl.exe'
