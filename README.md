@@ -53,20 +53,35 @@ The mode and EDID logic is deliberately free of Windows dependencies so
 `tests\` can exercise it as a plain console program — no WDK, no install, no
 reboot. `scripts\build.ps1 -SkipTests` skips the run.
 
-## Testing on another machine
+## Installing on another machine
 
 ```powershell
-scripts\package.ps1     # -> out\nyan-real-vdd-x64-<rev>.zip
+scripts\package.ps1
 ```
 
-Copy the zip to the target machine, unpack it, and run `.\install.ps1` from an
-elevated PowerShell. No repository, WDK, or build needed there; the bundled
-`README.txt` explains what it installs, including the self-signed certificate
-it adds to that machine's trusted roots.
+produces both, named `nyan-real-vdd-<version>+g<commit>`:
 
+- a **portable ZIP** — unpack anywhere and run `.\install.ps1` elevated
+- an **installer .exe** (when Inno Setup is present) — English and Japanese,
+  registers in Add/Remove Programs, and refuses to run on anything below
+  Windows 11 24H2 or on ARM64
+
+Neither needs the repository, the WDK, or a build on the target machine.
 CI verifies the build and runs the tests, but its artifacts are **unsigned** —
-the signing key never leaves the developer's machine, so installable packages
-come from `package.ps1`.
+the signing key never leaves the developer's machine.
+
+> **This trusts a certificate on that machine.** The driver is signed with a
+> self-signed development certificate, and installing adds it to the machine's
+> Trusted Root Certification Authorities and Trusted Publishers stores. From
+> then on that machine accepts **any** binary signed with that key, not just
+> this driver. The installer says so and asks for confirmation; a silent
+> install (`/VERYSILENT`) skips the question, so read this first. Uninstalling
+> removes the certificate again. See [docs/signing.ja.md](docs/signing.ja.md)
+> for the EV + attestation route that removes the need for this entirely.
+
+Deployment notes: the installer exits **0** on success, **7** if the driver
+could not be registered (nothing is left behind), and honours
+`/RESTARTEXITCODE` when Windows asks for a reboot to finish.
 
 ## Install & try
 

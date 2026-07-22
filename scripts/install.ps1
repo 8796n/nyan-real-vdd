@@ -88,10 +88,12 @@ if (-not $SkipCert) {
     Write-Host 'certificate trusted (Root + TrustedPublisher)'
 }
 
+$RebootRequired = $false
 pnputil /add-driver $Inf /install
 # 3010 == ERROR_SUCCESS_REBOOT_REQUIRED, which is a success.
 if ($LASTEXITCODE -eq 3010) {
     Write-Host 'driver staged; a reboot is required to complete the installation'
+    $RebootRequired = $true
 } elseif ($LASTEXITCODE -ne 0) {
     throw "pnputil /add-driver failed ($LASTEXITCODE)"
 }
@@ -102,6 +104,15 @@ if ($LASTEXITCODE -ne 0) { throw 'nyanvddctl install-device failed' }
 Write-Host ''
 Write-Host "OK - try: `"$Ctl`" plug 1920x1080@120"
 Write-Host "         `"$Ctl`" resolve"
+
+# Pass "installed, but the machine needs a reboot" up as ERROR_SUCCESS_REBOOT_
+# REQUIRED rather than swallowing it, so a caller (the installer, or a
+# deployment tool) can schedule the restart instead of guessing.
+if ($RebootRequired) {
+    Write-Host ''
+    Write-Host 'A reboot is required to finish installing the driver.'
+    exit 3010
+}
 
 }
 finally {

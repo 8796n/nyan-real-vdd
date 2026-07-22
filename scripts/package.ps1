@@ -46,9 +46,26 @@ if ($CatSignature.Status -ne 'Valid' -and $CatSignature.Status -ne 'UnknownError
     throw "nyanvdd.cat is not signed (status: $($CatSignature.Status)) — run scripts\sign-dev.ps1"
 }
 
+# A real version number, not the commit hash: it ends up in Add/Remove
+# Programs and is what upgrade checks compare, and Inno falls back to 0.0.0.0
+# for VersionInfoVersion when it cannot parse it. The commit only identifies
+# the build.
+$Version = (Get-Content (Join-Path $RepoRoot 'VERSION') -Raw).Trim()
+if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "VERSION must be a.b.c, got '$Version'" }
+
+# Keep the driver's own version macros from drifting away from VERSION.
+$DriverHeader = Get-Content (Join-Path $RepoRoot 'driver\src\Driver.h') -Raw
+$HeaderMajor = [regex]::Match($DriverHeader, 'NYANVDD_DRIVER_VERSION_MAJOR\s+(\d+)').Groups[1].Value
+$HeaderMinor = [regex]::Match($DriverHeader, 'NYANVDD_DRIVER_VERSION_MINOR\s+(\d+)').Groups[1].Value
+$VersionParts = $Version.Split('.')
+if ($HeaderMajor -ne $VersionParts[0] -or $HeaderMinor -ne $VersionParts[1]) {
+    throw "VERSION ($Version) disagrees with Driver.h ($HeaderMajor.$HeaderMinor)"
+}
+
 $Revision = (& git -C $RepoRoot rev-parse --short HEAD 2>$null)
 if ($LASTEXITCODE -ne 0 -or -not $Revision) { $Revision = 'nogit' }
-$Name = "nyan-real-vdd-x64-$Revision"
+$Build = "$Version+g$Revision"
+$Name = "nyan-real-vdd-$Build-x64"
 $Staging = Join-Path $OutDir $Name
 
 if (Test-Path $Staging) { Remove-Item $Staging -Recurse -Force }
@@ -64,7 +81,7 @@ $Signer = $CatSignature.SignerCertificate
 $SignerLine = if ($Signer) { "$($Signer.Subject)  (thumbprint $($Signer.Thumbprint))" } else { 'unknown' }
 
 @"
-nyan Real VDD - portable package ($Revision)
+nyan Real VDD - portable package ($Build)
 ============================================
 
 A virtual display driver for Windows 11 24H2 and later (x64).
@@ -124,11 +141,57 @@ $Iscc = @(
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if ($Iscc) {
+    # The installer needs its own README: the portable one talks about running
+    # scripts out of an unpacked folder, which is wrong once Setup has done it.
+    $InstalledReadme = Join-Path $OutDir 'README-installed.txt'
+    @"
+nyan Real VDD ($Build)
+======================
+
+Installed. https://github.com/8796n/nyan-real-vdd
+
+USE IT
+------
+nyanvddctl.exe lives in this folder. From any normal (non-elevated) prompt:
+
+    "%ProgramFiles%\nyan Real VDD\nyanvddctl.exe" status
+    "%ProgramFiles%\nyan Real VDD\nyanvddctl.exe" plug 1920x1080@120
+    "%ProgramFiles%\nyan Real VDD\nyanvddctl.exe" resolve
+    "%ProgramFiles%\nyan Real VDD\nyanvddctl.exe" unplug all
+
+Adding and removing monitors does not need administrator rights.
+
+REMOVE IT
+---------
+Settings > Apps > Installed apps > nyan Real VDD > Uninstall.
+That also removes the driver and the signing certificate below.
+
+WHAT THIS MACHINE NOW TRUSTS
+----------------------------
+The driver is signed with a self-signed development certificate:
+
+    $SignerLine
+
+Setup added it to this machine's Trusted Root and Trusted Publishers stores,
+so the machine now accepts ANY binary signed with that key. Uninstalling
+removes it again.
+
+NOTES
+-----
+* Over Remote Desktop the monitors are created on the CONSOLE session's
+  desktop and are not visible in the remote session. nyanvddctl says so
+  explicitly when that happens. Test from the machine's own console.
+* Driver log:    C:\ProgramData\nyan-real-vdd\driver.log
+* Setup logs:    C:\ProgramData\nyan-real-vdd\install.log
+                 C:\ProgramData\nyan-real-vdd\uninstall.log
+"@ | Set-Content $InstalledReadme -Encoding UTF8
+
     $Iss = Join-Path $RepoRoot 'installer\nyan-real-vdd.iss'
-    & $Iscc "/DAppVersion=$Revision" "/DStageDir=$Staging" "/O$OutDir" $Iss | Out-Null
+    & $Iscc "/DAppVersion=$Version" "/DBuildId=$Build" "/DStageDir=$Staging" `
+            "/DInstalledReadme=$InstalledReadme" "/O$OutDir" $Iss | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
 
-    $Setup = Join-Path $OutDir "nyan-real-vdd-$Revision-windows-x64-installer.exe"
+    $Setup = Join-Path $OutDir "nyan-real-vdd-$Build-windows-x64-installer.exe"
     Write-Host ''
     Write-Host "OK: $Setup"
     Write-Host '    (unsigned: sign it before handing it to anyone else, or'
