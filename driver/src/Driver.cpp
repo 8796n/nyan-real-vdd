@@ -327,6 +327,11 @@ NTSTATUS NyanVddDeviceD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE PreviousS
     auto* pContext = WdfObjectGet_IndirectDeviceContextWrapper(Device);
     pContext->pContext->InitAdapter();
 
+    // Resume from S3/S4: the controlling client was suspended along with the
+    // machine and had no chance to pet the watchdog, so hand it a full timeout
+    // window instead of whatever remained when the machine went down.
+    pContext->pContext->PetWatchdog();
+
     return STATUS_SUCCESS;
 }
 
@@ -1026,6 +1031,18 @@ bool IndirectDeviceContext::CopySlotByEdid(const void* Data, UINT32 Size, Monito
     return false;
 }
 
+// Watchdog time base. GetTickCount64 keeps counting through sleep and
+// hibernation, so a deadline computed from it expires while the machine — and
+// the client that was supposed to pet the watchdog — is suspended, and the
+// watchdog would unplug the whole wall the moment the machine resumes. Count
+// only awake time instead: sleep does not consume any of the timeout.
+static ULONGLONG UnbiasedNowMs()
+{
+    ULONGLONG Time100ns = 0;
+    QueryUnbiasedInterruptTime(&Time100ns);
+    return Time100ns / 10000;
+}
+
 NTSTATUS IndirectDeviceContext::SetWatchdog(UINT32 TimeoutMs)
 {
     lock_guard<mutex> Guard(m_Lock);
@@ -1063,7 +1080,7 @@ NTSTATUS IndirectDeviceContext::SetWatchdog(UINT32 TimeoutMs)
     }
 
     m_WatchdogTimeoutMs = TimeoutMs;
-    m_WatchdogDeadline = TimeoutMs ? GetTickCount64() + TimeoutMs : 0;
+    m_WatchdogDeadline = TimeoutMs ? UnbiasedNowMs() + TimeoutMs : 0;
     if (m_WatchdogWake)
     {
         SetEvent(m_WatchdogWake);
@@ -1093,7 +1110,9 @@ void IndirectDeviceContext::PetWatchdog()
     lock_guard<mutex> Guard(m_Lock);
     if (m_WatchdogTimeoutMs != 0)
     {
-        m_WatchdogDeadline = GetTickCount64() + m_WatchdogTimeoutMs;
+        // No wake needed: a pet only ever moves the deadline further out, and
+        // the loop re-derives the remaining time whenever its wait elapses.
+        m_WatchdogDeadline = UnbiasedNowMs() + m_WatchdogTimeoutMs;
     }
 }
 
@@ -1114,7 +1133,7 @@ void IndirectDeviceContext::WatchdogLoop()
             lock_guard<mutex> Guard(m_Lock);
             if (m_WatchdogTimeoutMs != 0)
             {
-                const ULONGLONG Now = GetTickCount64();
+                const ULONGLONG Now = UnbiasedNowMs();
                 if (Now >= m_WatchdogDeadline)
                 {
                     m_WatchdogTimeoutMs = 0;
@@ -1146,7 +1165,12 @@ void IndirectDeviceContext::WatchdogLoop()
         }
         if (WaitResult != WAIT_OBJECT_0 + 1 && WaitResult != WAIT_TIMEOUT)
         {
-            NYVDD_LOG(L"Watchdog wait failed: %u", GetLastError());
+            // The thread is dying: disarm so GET_STATUS does not keep
+            // advertising a watchdog that nobody is enforcing.
+            NYVDD_LOG(L"Watchdog wait failed: %u — disarming", GetLastError());
+            lock_guard<mutex> Guard(m_Lock);
+            m_WatchdogTimeoutMs = 0;
+            m_WatchdogDeadline = 0;
             return;
         }
     }

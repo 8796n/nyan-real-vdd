@@ -254,6 +254,10 @@ typedef struct NYANVDD_LIST_OUT {
 // spurious removals under system stalls structurally unlikely.
 // ANY successful nyanvdd IOCTL refreshes the deadline. When the deadline
 // passes, ALL monitors are unplugged and the watchdog disarms itself.
+// The timeout counts only time the system is awake: sleep/hibernation does
+// not consume it, and resuming refreshes the deadline — an armed watchdog
+// never fires merely because the machine slept while the client was armed
+// but suspended.
 typedef struct NYANVDD_WATCHDOG_IN {
     UINT32 TimeoutMs;
 } NYANVDD_WATCHDOG_IN;
