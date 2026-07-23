@@ -126,6 +126,7 @@ NOTES
   desktop and are not visible in the remote session. nyanvddctl says so
   explicitly when that happens. Test from the machine's own console.
 * Driver log: C:\ProgramData\nyan-real-vdd\driver.log
+  (rotates into driver.log.old at 1 MiB; send both when reporting an issue)
 "@ | Set-Content (Join-Path $Staging 'README.txt') -Encoding UTF8
 
 $Zip = Join-Path $OutDir "$Name.zip"
@@ -187,6 +188,7 @@ NOTES
   desktop and are not visible in the remote session. nyanvddctl says so
   explicitly when that happens. Test from the machine's own console.
 * Driver log:    C:\ProgramData\nyan-real-vdd\driver.log
+                 (rotates into driver.log.old at 1 MiB; send both with reports)
 * Setup logs:    C:\ProgramData\nyan-real-vdd\install.log
                  C:\ProgramData\nyan-real-vdd\uninstall.log
 "@ | Set-Content $InstalledReadme -Encoding UTF8

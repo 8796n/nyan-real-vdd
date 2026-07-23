@@ -44,26 +44,53 @@ void NyanVddLog(const wchar_t* Format, ...)
 
     // Also append to a plain-text log: the driver runs inside WUDFHost where
     // OutputDebugString is awkward to capture in the field. Logging is rare
-    // (state changes only), so open/append/close per line is fine.
+    // (state changes only), so open/append/close per line is fine; the mutex
+    // serializes the size check against the rotation below.
+    static std::mutex LogLock;
+    std::lock_guard<std::mutex> Guard(LogLock);
+
+    static const wchar_t* const LogPath = L"C:\\ProgramData\\nyan-real-vdd\\driver.log";
+    static const wchar_t* const OldPath = L"C:\\ProgramData\\nyan-real-vdd\\driver.log.old";
+
     CreateDirectoryW(L"C:\\ProgramData\\nyan-real-vdd", nullptr);
-    HANDLE File = CreateFileW(L"C:\\ProgramData\\nyan-real-vdd\\driver.log",
-                              FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
+    HANDLE File = CreateFileW(LogPath, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
                               OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (File != INVALID_HANDLE_VALUE)
+    if (File == INVALID_HANDLE_VALUE)
     {
-        SYSTEMTIME Time;
-        GetLocalTime(&Time);
-        char Line[600];
-        int Length = sprintf_s(Line, "%04u-%02u-%02u %02u:%02u:%02u.%03u %ls",
-                               Time.wYear, Time.wMonth, Time.wDay, Time.wHour,
-                               Time.wMinute, Time.wSecond, Time.wMilliseconds, Buf);
-        if (Length > 0)
-        {
-            DWORD Written = 0;
-            WriteFile(File, Line, (DWORD)Length, &Written, nullptr);
-        }
-        CloseHandle(File);
+        return;
     }
+
+    // Cap the log with one .old generation: pathological loops are exactly
+    // when logging bursts, and a field log that ate the disk is worse than no
+    // log. Worst case on disk is 2 x kMaxLogBytes, forever, and the recent
+    // history survives the boundary in .old. If the rename loses a race with
+    // an external reader it simply retries on a later line.
+    constexpr LONGLONG kMaxLogBytes = 1 * 1024 * 1024;
+    LARGE_INTEGER Size = {};
+    if (GetFileSizeEx(File, &Size) && Size.QuadPart >= kMaxLogBytes)
+    {
+        CloseHandle(File);
+        MoveFileExW(LogPath, OldPath, MOVEFILE_REPLACE_EXISTING);
+        File = CreateFileW(LogPath, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (File == INVALID_HANDLE_VALUE)
+        {
+            return;
+        }
+    }
+
+    SYSTEMTIME Time;
+    GetLocalTime(&Time);
+    char Line[600];
+    int Length = sprintf_s(Line, "%04u-%02u-%02u %02u:%02u:%02u.%03u %ls",
+                           Time.wYear, Time.wMonth, Time.wDay, Time.wHour,
+                           Time.wMinute, Time.wSecond, Time.wMilliseconds, Buf);
+    if (Length > 0)
+    {
+        DWORD Written = 0;
+        WriteFile(File, Line, (DWORD)Length, &Written, nullptr);
+    }
+    CloseHandle(File);
 }
 
 #pragma endregion
