@@ -8,6 +8,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "nyanvddctl", "cli\nyanvddct
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "nyanvdd_tests", "tests\nyanvdd_tests.vcxproj", "{376239C3-8025-484C-88FF-E2529CB98DB4}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "dirty_probe", "tools\dirty-probe\dirty_probe.vcxproj", "{CC5C5149-633F-4A58-B17F-9F5EBCA6231C}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -26,6 +28,10 @@ Global
 		{376239C3-8025-484C-88FF-E2529CB98DB4}.Debug|x64.Build.0 = Debug|x64
 		{376239C3-8025-484C-88FF-E2529CB98DB4}.Release|x64.ActiveCfg = Release|x64
 		{376239C3-8025-484C-88FF-E2529CB98DB4}.Release|x64.Build.0 = Release|x64
+		{CC5C5149-633F-4A58-B17F-9F5EBCA6231C}.Debug|x64.ActiveCfg = Debug|x64
+		{CC5C5149-633F-4A58-B17F-9F5EBCA6231C}.Debug|x64.Build.0 = Debug|x64
+		{CC5C5149-633F-4A58-B17F-9F5EBCA6231C}.Release|x64.ActiveCfg = Release|x64
+		{CC5C5149-633F-4A58-B17F-9F5EBCA6231C}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
