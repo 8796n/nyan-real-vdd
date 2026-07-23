@@ -76,6 +76,12 @@ namespace
             L"                       (waits for >=3 s of input idle, restores the position)\n"
             L"  --csv <path>         append per-frame records as CSV\n"
             L"  --label <name>       scenario name for the summary/CSV (default: run)\n"
+            L"  --mode <m>           dirty-region mode: report (ReportOnly, default),\n"
+            L"                       render (ReportAndRender), none (session default)\n"
+            L"  --min-update <ms>    set GraphicsCaptureSession.MinUpdateInterval\n"
+            L"  --hash               read back and FNV-hash every frame's pixels, to\n"
+            L"                       tell content changes from metadata-only frames\n"
+            L"                       (slow per frame; meant for low-fps scenarios)\n"
             L"  --verbose            print one line per captured frame\n");
     }
 
@@ -276,7 +282,11 @@ namespace
         uint64_t DirtyPx = 0;
         RECT BoundingBox = {};
         bool HasDirtyInfo = false;
+        uint64_t Hash = 0;        // FNV-1a of the frame pixels (--hash only)
+        bool HashValid = false;
     };
+
+    enum class ProbeMode { Report, Render, None };
 
     uint64_t Percentile(std::vector<uint64_t>& Sorted, double P)
     {
@@ -300,6 +310,9 @@ int wmain(int argc, wchar_t** argv)
     bool Wiggle = false;
     bool Verbose = false;
     bool ListOnly = false;
+    bool HashFrames = false;
+    ProbeMode Mode = ProbeMode::Report;
+    int MinUpdateMs = 0;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -311,6 +324,16 @@ int wmain(int argc, wchar_t** argv)
         else if (wcscmp(argv[i], L"--csv") == 0 && i + 1 < argc) { CsvPath = argv[++i]; }
         else if (wcscmp(argv[i], L"--label") == 0 && i + 1 < argc) { Label = argv[++i]; }
         else if (wcscmp(argv[i], L"--verbose") == 0) { Verbose = true; }
+        else if (wcscmp(argv[i], L"--hash") == 0) { HashFrames = true; }
+        else if (wcscmp(argv[i], L"--min-update") == 0 && i + 1 < argc) { MinUpdateMs = _wtoi(argv[++i]); }
+        else if (wcscmp(argv[i], L"--mode") == 0 && i + 1 < argc)
+        {
+            ++i;
+            if (wcscmp(argv[i], L"report") == 0) { Mode = ProbeMode::Report; }
+            else if (wcscmp(argv[i], L"render") == 0) { Mode = ProbeMode::Render; }
+            else if (wcscmp(argv[i], L"none") == 0) { Mode = ProbeMode::None; }
+            else { fwprintf(stderr, L"bad --mode value: %s\n", argv[i]); return 2; }
+        }
         else if (wcscmp(argv[i], L"--stimulus") == 0 && i + 1 < argc)
         {
             ++i;
@@ -394,15 +417,33 @@ int wmain(int argc, wchar_t** argv)
 
     const bool DirtySupported = ApiInformation::IsPropertyPresent(
         L"Windows.Graphics.Capture.GraphicsCaptureSession", L"DirtyRegionMode");
+    const wchar_t* EffectiveMode = L"UNAVAILABLE";
     if (DirtySupported)
     {
-        // ReportOnly: full frames, dirty rects as metadata — measurement mode.
-        Session.DirtyRegionMode(GraphicsCaptureDirtyRegionMode::ReportOnly);
+        // ReportOnly: full frames, dirty rects as metadata (measurement mode).
+        // ReportAndRender: the system also limits buffer rendering to the
+        // dirty regions. "none" leaves the session default to observe it.
+        if (Mode == ProbeMode::Report)
+        {
+            Session.DirtyRegionMode(GraphicsCaptureDirtyRegionMode::ReportOnly);
+        }
+        else if (Mode == ProbeMode::Render)
+        {
+            Session.DirtyRegionMode(GraphicsCaptureDirtyRegionMode::ReportAndRender);
+        }
+        EffectiveMode = Session.DirtyRegionMode() == GraphicsCaptureDirtyRegionMode::ReportAndRender
+            ? L"ReportAndRender" : L"ReportOnly";
     }
     else
     {
         wprintf(L"WARNING: DirtyRegionMode is not available on this OS (needs Windows 11\n"
                 L"         24H2 / build 26100+). Frame counts only.\n\n");
+    }
+
+    if (MinUpdateMs > 0 && ApiInformation::IsPropertyPresent(
+            L"Windows.Graphics.Capture.GraphicsCaptureSession", L"MinUpdateInterval"))
+    {
+        Session.MinUpdateInterval(winrt::Windows::Foundation::TimeSpan{ MinUpdateMs * 10000LL });
     }
 
     // The yellow capture border lives on the captured desktop itself, so leave
@@ -419,6 +460,10 @@ int wmain(int argc, wchar_t** argv)
     std::mutex RecordsLock;
     std::vector<FrameRecord> Records;
     Records.reserve(4096);
+
+    com_ptr<ID3D11DeviceContext> D3dContext;
+    D3dDevice->GetImmediateContext(D3dContext.put());
+    com_ptr<ID3D11Texture2D> StagingTex; // lazily (re)created to match frames
 
     auto Revoker = Pool.FrameArrived(auto_revoke,
         [&](Direct3D11CaptureFramePool const& Sender, winrt::Windows::Foundation::IInspectable const&)
@@ -444,6 +489,65 @@ int wmain(int argc, wchar_t** argv)
 
             {
                 std::lock_guard<std::mutex> Guard(RecordsLock);
+
+                // Distinguish "the pixels really changed" from "a frame was
+                // delivered": copy to a staging texture and FNV-hash the bytes.
+                // (In ReportAndRender mode the pool's two buffers alternate and
+                // non-dirty areas may be stale, so hashes are only meaningful
+                // in ReportOnly / default mode.)
+                if (HashFrames)
+                {
+                    auto Access = Frame.Surface().try_as<
+                        ::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
+                    com_ptr<ID3D11Texture2D> Tex;
+                    if (Access && SUCCEEDED(Access->GetInterface(IID_PPV_ARGS(Tex.put()))))
+                    {
+                        D3D11_TEXTURE2D_DESC Desc = {};
+                        Tex->GetDesc(&Desc);
+                        if (StagingTex)
+                        {
+                            D3D11_TEXTURE2D_DESC Have = {};
+                            StagingTex->GetDesc(&Have);
+                            if (Have.Width != Desc.Width || Have.Height != Desc.Height ||
+                                Have.Format != Desc.Format)
+                            {
+                                StagingTex = nullptr;
+                            }
+                        }
+                        if (!StagingTex)
+                        {
+                            D3D11_TEXTURE2D_DESC StagingDesc = Desc;
+                            StagingDesc.Usage = D3D11_USAGE_STAGING;
+                            StagingDesc.BindFlags = 0;
+                            StagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                            StagingDesc.MiscFlags = 0;
+                            D3dDevice->CreateTexture2D(&StagingDesc, nullptr, StagingTex.put());
+                        }
+                        D3D11_MAPPED_SUBRESOURCE Mapped = {};
+                        if (StagingTex)
+                        {
+                            D3dContext->CopyResource(StagingTex.get(), Tex.get());
+                            if (SUCCEEDED(D3dContext->Map(StagingTex.get(), 0, D3D11_MAP_READ, 0, &Mapped)))
+                            {
+                                uint64_t Hash = 14695981039346656037ull;
+                                const size_t RowBytes = (size_t)Desc.Width * 4;
+                                for (UINT y = 0; y < Desc.Height; ++y)
+                                {
+                                    const uint8_t* Row =
+                                        (const uint8_t*)Mapped.pData + (size_t)y * Mapped.RowPitch;
+                                    for (size_t x = 0; x < RowBytes; ++x)
+                                    {
+                                        Hash = (Hash ^ Row[x]) * 1099511628211ull;
+                                    }
+                                }
+                                D3dContext->Unmap(StagingTex.get(), 0);
+                                Record.Hash = Hash;
+                                Record.HashValid = true;
+                            }
+                        }
+                    }
+                }
+
                 Records.push_back(Record);
             }
             if (Verbose)
@@ -458,10 +562,19 @@ int wmain(int argc, wchar_t** argv)
     wprintf(L"label      : %s\n", Label);
     wprintf(L"monitor    : %s  %dx%d (%llu px)\n", Monitor->Device.c_str(),
             ItemSize.Width, ItemSize.Height, ScreenPx);
-    wprintf(L"cursor     : %s   border: %s   dirty info: %s\n",
+    wprintf(L"cursor     : %s   border: %s   dirty mode: %s%s\n",
             CursorCapture ? L"captured" : L"excluded",
             Borderless ? L"disabled" : L"system default",
-            DirtySupported ? L"ReportOnly" : L"UNAVAILABLE");
+            EffectiveMode,
+            Mode == ProbeMode::None ? L" (session default)" : L"");
+    if (MinUpdateMs > 0)
+    {
+        wprintf(L"min-update : %d ms\n", MinUpdateMs);
+    }
+    if (HashFrames)
+    {
+        wprintf(L"hash       : per-frame pixel FNV (content-change detection)\n");
+    }
     if (g_Stimulus.Size > 0)
     {
         wprintf(L"stimulus   : %dx%d @ %d Hz (expected dirty %d px/update)\n",
@@ -564,6 +677,23 @@ int wmain(int argc, wchar_t** argv)
         }
     }
 
+    if (HashFrames)
+    {
+        uint64_t Prev = 0;
+        bool HavePrev = false;
+        size_t Hashed = 0, Changed = 0;
+        for (const FrameRecord& Record : Frames)
+        {
+            if (!Record.HashValid) continue;
+            ++Hashed;
+            if (HavePrev && Record.Hash != Prev) ++Changed;
+            Prev = Record.Hash;
+            HavePrev = true;
+        }
+        wprintf(L"content    : %zu of %zu hashed frame(s) actually changed pixels\n",
+                Changed, Hashed);
+    }
+
     if (CsvPath)
     {
         FILE* Csv = nullptr;
@@ -572,16 +702,17 @@ int wmain(int argc, wchar_t** argv)
             fseek(Csv, 0, SEEK_END);
             if (ftell(Csv) == 0)
             {
-                fwprintf(Csv, L"label,frame,t_rel_ms,rects,dirty_px,bbox_left,bbox_top,bbox_right,bbox_bottom\n");
+                fwprintf(Csv, L"label,frame,t_rel_ms,rects,dirty_px,bbox_left,bbox_top,bbox_right,bbox_bottom,hash\n");
             }
             for (size_t i = 0; i < Frames.size(); ++i)
             {
                 const FrameRecord& Record = Frames[i];
-                fwprintf(Csv, L"%s,%zu,%.3f,%u,%llu,%ld,%ld,%ld,%ld\n", Label, i,
+                fwprintf(Csv, L"%s,%zu,%.3f,%u,%llu,%ld,%ld,%ld,%ld,%016llX\n", Label, i,
                          (Record.TimeRel100ns - Frames[0].TimeRel100ns) / 10000.0,
                          Record.RectCount, Record.DirtyPx,
                          Record.BoundingBox.left, Record.BoundingBox.top,
-                         Record.BoundingBox.right, Record.BoundingBox.bottom);
+                         Record.BoundingBox.right, Record.BoundingBox.bottom,
+                         Record.HashValid ? Record.Hash : 0ull);
             }
             fclose(Csv);
             wprintf(L"csv        : appended %zu row(s) to %s\n", Frames.size(), CsvPath);
