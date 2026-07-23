@@ -66,6 +66,17 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     throw 'run this script from an elevated (Administrator) PowerShell'
 }
 
+# The installer .exe refuses ARM64 via ArchitecturesAllowed, but the portable
+# ZIP runs this script directly. ARM64 Windows emulates x64 user-mode code well
+# enough to run everything here — including staging the package and creating
+# the device node — but it cannot load an x64 driver, which would end in a
+# device with no driver and no hint why. OSArchitecture is immune to emulation
+# (PROCESSOR_ARCHITECTURE is not: it reports x64 inside an emulated process).
+$Arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+if ("$Arch" -ne 'X64') {
+    throw "this driver package is x64-only; this machine's OS architecture is $Arch."
+}
+
 # The INF only binds on Windows 11 24H2 and later, but staging the package and
 # creating the device node succeed anywhere — which would leave a device with
 # no driver behind it and no explanation. Refuse up front instead.
