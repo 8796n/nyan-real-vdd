@@ -147,9 +147,14 @@ NYANVDD_INLINE UINT32 NyanVddCookieFromContainerId(const GUID* ContainerId)
 #pragma pack(push, 4)
 
 // Capability flags in NYANVDD_STATUS_OUT.CapFlags.
+//
+// NYANVDD_CAP_PRECISE_DIRTY is retired (2026-07): precise present regions were
+// measured to have no effect on the dirty rects WGC reports to capture clients
+// (those come from DWM's own damage tracking), so the driver no longer requests
+// them and never sets this bit. Kept for decoding the status of older builds.
 #define NYANVDD_CAP_HDR10_READY     0x00000001u // OS IddCx >= 1.10: HDR-capable plumbing active
 #define NYANVDD_CAP_RT_GPU_PRIORITY 0x00000002u // OS IddCx >= 1.9: realtime GPU priority applied
-#define NYANVDD_CAP_PRECISE_DIRTY   0x00000004u // OS IddCx >= 1.8: precise present regions requested
+#define NYANVDD_CAP_PRECISE_DIRTY   0x00000004u // retired, see above
 
 // AdapterState: PLUG returns ERROR_NOT_READY both while the adapter is still
 // coming up and when it failed for good, so this is how a client tells a race

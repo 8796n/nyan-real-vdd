@@ -24,9 +24,11 @@ those by design:
   *optional* watchdog (>= 10 s, refreshed by any control call) is available for
   clients that want orphan cleanup.
 - **Windows 11 24H2+ (IddCx 1.10 floor).** Everything older is end-of-life,
-  so it is not carried as untested baggage. Precise present regions and
-  realtime GPU priority for the frame path are always on; features beyond
-  1.10 (e.g. IddCx 1.11 D3D12) are detected at runtime.
+  so it is not carried as untested baggage. Realtime GPU priority for the
+  frame path is always on; features beyond 1.10 (e.g. IddCx 1.11 D3D12) are
+  detected at runtime. (Precise present regions are deliberately not
+  requested: measured to have no effect on the dirty regions WGC reports to
+  capture clients — see docs/design.ja.md.)
 
 ## Layout
 

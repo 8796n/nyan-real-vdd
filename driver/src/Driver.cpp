@@ -71,7 +71,6 @@ void NyanVddLog(const wchar_t* Format, ...)
 #pragma region ModeTable
 
 // OS IddCx version thresholds (IddCxGetVersion values).
-#define NYANVDD_OS_1_8  0x1800u
 #define NYANVDD_OS_1_9  0x1900u
 #define NYANVDD_OS_1_10 0x1A00u
 
@@ -615,15 +614,12 @@ void IndirectDeviceContext::InitAdapter()
     AdapterCaps.EndPointDiagnostics.pFirmwareVersion = &Version2;
     AdapterCaps.EndPointDiagnostics.pHardwareVersion = &Version2;
 
-#if IDDCX_VERSION_MINOR >= 8
-    if (m_OsVersion >= NYANVDD_OS_1_8)
-    {
-        // Ask DWM for precise dirty regions: the wall capture pipeline feeds
-        // on accurate damage, and imprecise regions inflate capture rate.
-        AdapterCaps.Flags |= IDDCX_ADAPTER_FLAGS_PREFER_PRECISE_PRESENT_REGIONS;
-        m_CapFlags |= NYANVDD_CAP_PRECISE_DIRTY;
-    }
-#endif
+    // IDDCX_ADAPTER_FLAGS_PREFER_PRECISE_PRESENT_REGIONS is deliberately not
+    // requested. Measured 2026-07 (docs/design.ja.md): it does not change the
+    // dirty regions WGC reports to the capture client — those come from DWM's
+    // own damage tracking — and this driver discards its swap-chain frames, so
+    // the flag could only add DWM composition cost. NYANVDD_CAP_PRECISE_DIRTY
+    // is retired with it and no longer reported.
 #if IDDCX_VERSION_MINOR >= 10
     // HDR (FP16) is opt-in while experimental: on IddCx 1.11 (0x1B01) the OS
     // rejects IddCxAdapterInitAsync with STATUS_INVALID_PARAMETER when
@@ -645,7 +641,7 @@ void IndirectDeviceContext::InitAdapter()
     // Field-debug override: HKLM\SOFTWARE\nyan-real-vdd\DisableAdapterFlags
     // (DWORD, bitmask of IDDCX_ADAPTER_FLAGS values) strips adapter flags at
     // init time so feature/OS incompatibilities can be bisected without a
-    // rebuild. 0x20 = precise present regions, 0x40 = FP16 processing.
+    // rebuild. 0x40 = FP16 processing.
     DWORD DisableFlags = 0;
     DWORD ValueSize = sizeof(DisableFlags);
     if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\nyan-real-vdd", L"DisableAdapterFlags",
@@ -653,10 +649,6 @@ void IndirectDeviceContext::InitAdapter()
         DisableFlags != 0)
     {
         AdapterCaps.Flags &= ~(IDDCX_ADAPTER_FLAGS)DisableFlags;
-        if (DisableFlags & 0x20)
-        {
-            m_CapFlags &= ~NYANVDD_CAP_PRECISE_DIRTY;
-        }
         if (DisableFlags & 0x40)
         {
             m_CapFlags &= ~NYANVDD_CAP_HDR10_READY;
@@ -678,22 +670,11 @@ void IndirectDeviceContext::InitAdapter()
     // permanently unable to plug anything (observed: a rejected adapter made
     // every later PLUG return NOT_READY with nothing in status to explain it).
     const IDDCX_ADAPTER_FLAGS RequestedFlags = AdapterCaps.Flags;
-    const IDDCX_ADAPTER_FLAGS Optional =
-        (IDDCX_ADAPTER_FLAGS)(
-#if IDDCX_VERSION_MINOR >= 10
-            IDDCX_ADAPTER_FLAGS_CAN_PROCESS_FP16 |
-#endif
-#if IDDCX_VERSION_MINOR >= 8
-            IDDCX_ADAPTER_FLAGS_PREFER_PRECISE_PRESENT_REGIONS |
-#endif
-            0);
-
     const IDDCX_ADAPTER_FLAGS Attempts[] = {
         RequestedFlags,
 #if IDDCX_VERSION_MINOR >= 10
         (IDDCX_ADAPTER_FLAGS)(RequestedFlags & ~(IDDCX_ADAPTER_FLAGS)IDDCX_ADAPTER_FLAGS_CAN_PROCESS_FP16),
 #endif
-        (IDDCX_ADAPTER_FLAGS)(RequestedFlags & ~Optional),
     };
 
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
@@ -725,12 +706,6 @@ void IndirectDeviceContext::InitAdapter()
         pContext->pContext = this;
 
         // Report only what the accepted attempt actually asked for.
-#if IDDCX_VERSION_MINOR >= 8
-        if (!(AdapterCaps.Flags & IDDCX_ADAPTER_FLAGS_PREFER_PRECISE_PRESENT_REGIONS))
-        {
-            m_CapFlags &= ~NYANVDD_CAP_PRECISE_DIRTY;
-        }
-#endif
 #if IDDCX_VERSION_MINOR >= 10
         if (!(AdapterCaps.Flags & IDDCX_ADAPTER_FLAGS_CAN_PROCESS_FP16))
         {

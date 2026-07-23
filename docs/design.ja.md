@@ -24,9 +24,10 @@
 - *1 系コールバックはフロア 1.10 では呼ばれないが、共通実装の薄いラッパー
   なので登録したまま残す（フロアを下げる時の保険 + 登録必須検証への安全策）。
 - 実行時に `IddCxGetVersion` で判定して段階的に有効化:
-  - 1.8+ (`0x1800`): `IDDCX_ADAPTER_FLAGS_PREFER_PRECISE_PRESENT_REGIONS`
-    （**2026-07-23 実測で WGC のダーティ精度には効果なしと判明** —
-    「差分キャプチャの実測」参照。外すか否かは未決）
+  - ~~1.8+: `IDDCX_ADAPTER_FLAGS_PREFER_PRECISE_PRESENT_REGIONS`~~ —
+    2026-07-23 実測で WGC のダーティ精度に効果なしと判明し**要求を廃止**
+    （「差分キャプチャの実測」参照。`NYANVDD_CAP_PRECISE_DIRTY` は以後
+    点灯しない）
   - 1.9+ (`0x1900`): `IddCxSetRealtimeGPUPriority`（スワップチェーンごと、
     SetDevice 直後に呼ぶ）
   - 1.10+ (`0x1A00`): *2 系 DDI（`IDDCX_MONITOR_MODE2` / `IDDCX_TARGET_MODE2`、
@@ -203,8 +204,9 @@ API）でダーティ矩形メタデータだけを読む計測ツールで、�
    damage 追跡由来で、IddCx swap-chain への present region（本ドライバは
    捨てる側）とは別経路。「キャプチャ側のダーティ精度向上」という当初の
    採用理由は誤り。MS ドキュメント上このフラグは DWM の合成コストを
-   増やしうるため、外す方が「軽い」に整合する可能性がある（未決。外す
-   場合も `NYANVDD_CAP_PRECISE_DIRTY` 定数は互換のため残す）。
+   増やしうるため、同日**要求を廃止した**（`NYANVDD_CAP_PRECISE_DIRTY`
+   定数は旧ビルドの status 解読用に残置。以後 status に precise-dirty は
+   点灯しない）。
 3. **ハードウェアカーソル DDI は実装しない（設計判断）。** HW カーソルの
    物理と SW カーソルの VDD、`IsCursorCaptureEnabled` のオンオフ、全4通り
    でカーソル移動の damage は同一（〜575 px・入力レート 34〜42fps）。
