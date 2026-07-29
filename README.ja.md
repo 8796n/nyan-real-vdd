@@ -103,6 +103,8 @@ scripts\uninstall.ps1          # 全部戻す
 
 ## ライセンス
 
-MIT。一部は Microsoft
+本プロジェクト自身のコードは MIT。`driver/src/Driver.cpp` /
+`driver/src/Driver.h` / `driver/nyanvdd.inf` の一部は Microsoft
 [Windows-driver-samples](https://github.com/microsoft/Windows-driver-samples)
-IndirectDisplay サンプル（MIT）由来。詳細は [LICENSE](LICENSE)。
+IndirectDisplay サンプル由来で、同プロジェクトは Microsoft Public License
+(MS-PL) で公開されている。詳細は [LICENSE](LICENSE)。

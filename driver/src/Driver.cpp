@@ -2,7 +2,9 @@
 // built for nyan Real (Spatial Wall).
 //
 // Portions derived from the Microsoft Windows-driver-samples IndirectDisplay
-// sample (MIT License, Copyright (c) Microsoft Corporation).
+// sample, Copyright (c) Microsoft Corporation. That project is published under
+// the Microsoft Public License (MS-PL); see LICENSE and
+// third_party/Windows-driver-samples/LICENSE.
 //
 // Architecture summary:
 //  - One root-enumerated adapter (created via SwDeviceCreate by the client),

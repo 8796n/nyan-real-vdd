@@ -6,6 +6,11 @@
 ; hardware id "NyanVDD". The Root\NyanVDD id is kept for manual
 ; installs and debugging.
 ;
+; Adapted from the Microsoft Windows-driver-samples IndirectDisplay sample
+; (IddSampleDriver.inf), Copyright (c) Microsoft Corporation. That project is
+; published under the Microsoft Public License (MS-PL); see LICENSE and
+; third_party/Windows-driver-samples/LICENSE.
+;
 
 [Version]
 PnpLockDown=1

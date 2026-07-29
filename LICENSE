@@ -22,7 +22,16 @@ SOFTWARE.
 
 ---
 
-Portions of driver/src are derived from the Microsoft Windows-driver-samples
-project (video/IndirectDisplay), Copyright (c) Microsoft Corporation,
-licensed under the MIT License:
-https://github.com/microsoft/Windows-driver-samples
+The MIT terms above cover this project's own code.
+
+Portions of the following files are derived from the Microsoft
+Windows-driver-samples project (video/IndirectDisplay), Copyright (c)
+Microsoft Corporation:
+
+    driver/src/Driver.cpp
+    driver/src/Driver.h
+    driver/nyanvdd.inf
+
+That project is published under the Microsoft Public License (MS-PL); a copy
+is included at third_party/Windows-driver-samples/LICENSE.
+Upstream: https://github.com/microsoft/Windows-driver-samples
