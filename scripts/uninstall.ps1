@@ -1,7 +1,8 @@
 # Removes the nyan Real Virtual Display Driver from this machine (run as
 # Administrator):
-# unplugs monitors, removes the device node, deletes every staged copy of the
-# driver package, and (with -RemoveCert) untrusts the publisher certificate.
+# unregisters the device node restore task, unplugs monitors, removes the
+# device node, deletes every staged copy of the driver package, and (with
+# -RemoveCert) untrusts the publisher certificate.
 #
 # Works both from the repo and from a portable package (see install.ps1).
 
@@ -48,6 +49,20 @@ if ($Portable) {
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'run this script from an elevated (Administrator) PowerShell'
 }
+
+# Before remove-device, not after: the task exists to recreate the node, so
+# leaving it armed while removing the node is a race with the next logon.
+# Keep these two in sync with install.ps1.
+$TaskPath = '\nyan Real\'
+$TaskName = 'nyanvdd device node'
+$RestoreCtl = Join-Path $env:ProgramData 'nyan-real-vdd\nyanvddctl.exe'
+
+if (Get-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    Write-Host 'removing the device node restore task'
+    Unregister-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -Confirm:$false
+}
+# The log files in the same directory are diagnostics — they stay.
+if (Test-Path $RestoreCtl) { Remove-Item $RestoreCtl -Force }
 
 if (Test-Path $Ctl) {
     & $Ctl unplug all

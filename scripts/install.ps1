@@ -3,6 +3,7 @@
 #   1. trusts the publisher certificate (Root + TrustedPublisher)
 #   2. stages/installs the driver package (pnputil)
 #   3. creates the persistent device node (nyanvddctl install-device)
+#   4. registers a scheduled task that recreates that node at boot/logon
 #
 # Works in two layouts:
 #   - from the repo, after scripts\build.ps1 and scripts\sign-dev.ps1
@@ -112,6 +113,59 @@ if ($LASTEXITCODE -eq 3010) {
 
 & $Ctl install-device
 if ($LASTEXITCODE -ne 0) { throw 'nyanvddctl install-device failed' }
+
+# The device node is meant to outlive reboots (SWDeviceLifetimeParentPresent),
+# and normally does — but it has been observed to go non-present on its own
+# while the driver package stays installed, around the periodic device/driver
+# cleanup ("cleanmgr /autocleanstoragesense"). Nothing in the driver can see
+# that: the node is what clients open, so they just report "no nyanvdd device
+# found" and fall back to whatever else they support.
+#
+# So re-create it at every boot and logon. install-device is idempotent —
+# SwDeviceCreate reopens an existing instance and re-applies the lifetime — so
+# the normal case costs one short process start.
+#
+# The task must point at a copy that outlives this install: the portable ZIP
+# folder can be deleted, and the installer runs this script from {tmp}. The
+# driver's own ProgramData directory is the one place both layouts share.
+$RestoreDir = Join-Path $env:ProgramData 'nyan-real-vdd'
+$RestoreCtl = Join-Path $RestoreDir 'nyanvddctl.exe'
+# Keep these two in sync with uninstall.ps1.
+$TaskPath = '\nyan Real\'
+$TaskName = 'nyanvdd device node'
+
+try {
+    New-Item -ItemType Directory -Force $RestoreDir | Out-Null
+    Copy-Item $Ctl $RestoreCtl -Force
+
+    # S-1-5-18 rather than 'SYSTEM': the well-known SID is the same on every
+    # locale, the display name is not.
+    $TaskAction = New-ScheduledTaskAction -Execute $RestoreCtl -Argument 'install-device'
+    $TaskTriggers = @(
+        (New-ScheduledTaskTrigger -AtStartup),
+        (New-ScheduledTaskTrigger -AtLogOn)
+    )
+    $TaskPrincipal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' `
+        -LogonType ServiceAccount -RunLevel Highest
+    # StartWhenAvailable covers a machine that was asleep at boot time; the
+    # battery flags stop Windows from skipping the task on a laptop.
+    $TaskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries -StartWhenAvailable `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
+
+    Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath `
+        -Action $TaskAction -Trigger $TaskTriggers -Principal $TaskPrincipal `
+        -Settings $TaskSettings -Force `
+        -Description 'Recreates the nyan Real virtual display device node if it goes missing.' | Out-Null
+
+    Write-Host "device node restore task registered ($TaskPath$TaskName)"
+} catch {
+    # Not fatal: the driver and the device node are already in place, and this
+    # only protects against a later disappearance. Say so loudly instead of
+    # failing an otherwise good install.
+    Write-Warning "could not register the device node restore task: $($_.Exception.Message)"
+    Write-Warning 'The driver works, but a device node that disappears later will not come back on its own.'
+}
 
 Write-Host ''
 Write-Host "OK - try: `"$Ctl`" plug 1920x1080@120"

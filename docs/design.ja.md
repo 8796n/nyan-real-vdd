@@ -118,6 +118,51 @@ Adapter came up with reduced capabilities (0x60 requested, 0x20 accepted)
 （制御インターフェースを残してクライアントが理由を読めるようにするため。
 デバイスを落とすと Device Manager に黄色ビックリが出るだけで理由が残らない）。
 
+## デバイスノードの自動復元（起動/ログオン時タスク）
+
+devnode `SWD\NYANVDD\NYANVDD` は `SwDeviceCreate` +
+`SWDeviceLifetimeParentPresent` で作るので、作成プロセスが終了しても再起動を
+またいでも残る**はず**である。ところが実機（Z390）で、**ドライバーパッケージは
+入ったまま devnode だけが non-present（`CM_PROB_PHANTOM` = コード45）になる**
+事象を2回観測した。
+
+- 2026-07-25 09:28、pnputil が `Marking non-present device 'SWD\NYANVDD\NYANVDD'
+  for reinstall` と記録（＝その時点で既に消えていた）
+- 2026-08-02 20:48 のクライアント起動では正常 → 08-05 21:06 には消失。
+  間の 08-03 07:39 に `cleanmgr /autocleanstoragesense` が古い nyanvdd パッケージ
+  （oem30 / oem220 / oem221）を削除している
+
+いずれも早朝の定期クリーンアップ（ストレージセンサー / SilentCleanup）の直後で
+相関するが、**削除の直接ログは残らない**（`Delete Device` セクションにも
+Kernel-PnP のデバイス削除イベントにも nyanvdd は現れず、`Devices removed: 0`）。
+SWD デバイスの消滅は setupapi に記録されないため、状況証拠止まり。
+
+この状態はドライバー側から観測できない。devnode はクライアントが開く口そのもの
+なので、消えるとクライアントには「no nyanvdd device found」としか見えず、
+Spatial Wall は仕様どおり ParsecVDisplay へ黙って縮退する（アプリ側の不具合では
+ない）。レジストリの `Enum` キーと `oem*.inf` へのバインドは残ったままなので、
+**復旧は `install-device` を叩き直すだけでよい**。
+
+そこで `install.ps1` が次を登録する。
+
+- タスク `\nyan Real\nyanvdd device node` — 起動時＋ログオン時、SYSTEM
+  （SID `S-1-5-18`、ロケール非依存）、最高権限で
+  `nyanvddctl install-device` を1回実行
+- `install-device` は冪等（`SwDeviceCreate` は既存インスタンスを再オープンして
+  lifetime を再適用する）なので、正常時のコストは短いプロセス起動1回
+- タスクが指す exe は `%ProgramData%\nyan-real-vdd\nyanvddctl.exe`。
+  ポータブル ZIP のフォルダは消されうるし、インストーラ経由では
+  `install.ps1` 自体が `{tmp}` から動くため、そのままでは次の起動で
+  パスが無くなる。ドライバーのログ置き場は両レイアウトが共有する唯一の場所
+
+`uninstall.ps1` は **`remove-device` より先に**タスクを解除する（順序が逆だと
+次のログオンでタスクが復活させてしまう）。同ディレクトリのログは診断用なので
+消さない。
+
+原因そのものは未確定なので、再発したら次を採る: クリーンアップ前後で
+`Get-PnpDevice -InstanceId SWD\NYANVDD\NYANVDD` の `Present` を記録して消える
+瞬間を捕まえる、またはストレージセンサー／SilentCleanup を止めて再発するか見る。
+
 ## HDR10 の現状（準備あり・既定 SDR・FP16 はオプトイン）
 
 - a01+ / RayNeo Air 4 Pro など HDR10 パネル対応が動機。
@@ -274,6 +319,14 @@ API）でダーティ矩形メタデータだけを読む計測ツールで、�
 
 未消化:
 
+- [ ] 復元タスクが SYSTEM（セッション0）で `install-device` に成功すること
+      — 手動 `Start-ScheduledTask` → `LastTaskResult = 0` かつ devnode が
+      `Present = True`（「デバイスノードの自動復元」節）
+- [ ] devnode がある状態でタスクが走っても壊さないこと（冪等性の確認。
+      plug 済みモニターを保持したまま2回実行）
+- [ ] 再起動後にタスクが実際に発火して devnode が present になること
+- [ ] `uninstall.ps1` がタスクと `%ProgramData%` のコピーを消し、
+      ログは残すこと
 - [ ] RDP 切断 → コンソール復帰でモニターがそのまま見えるか
 - [ ] S3/S4 復帰で二重初期化しないこと（再入ガードは入れたが実機未確認）
 - [ ] watchdog armed のままスリープ → 復帰で誤発火しないこと

@@ -90,6 +90,7 @@ could not be registered (nothing is left behind), and honours
 ```powershell
 # elevated PowerShell
 scripts\install.ps1            # trust cert + pnputil + create device node
+                               # + register the boot/logon restore task
 
 out\nyanvddctl.exe status
 out\nyanvddctl.exe plug 1920x1080@120
@@ -99,6 +100,13 @@ out\nyanvddctl.exe unplug all
 
 scripts\uninstall.ps1          # remove everything
 ```
+
+`install.ps1` also registers a scheduled task (`\nyan Real\nyanvdd device
+node`) that re-runs `install-device` at boot and at logon. The device node is
+supposed to survive reboots on its own, but has been seen to go non-present
+while the driver package stays installed — a client then reports "no nyanvdd
+device found" even though nothing was uninstalled. The task is idempotent;
+`uninstall.ps1` removes it.
 
 The driver is user-mode only (no kernel code). With the self-signed flow the
 installer adds the publisher certificate to the machine's Root and

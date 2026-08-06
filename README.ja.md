@@ -86,6 +86,7 @@ CI はビルドとテストを検証するが成果物は**未署名**（署名�
 ```powershell
 # 管理者 PowerShell
 scripts\install.ps1            # 証明書信頼 + pnputil + devnode 作成
+                               # + 起動/ログオン時の復元タスク登録
 
 out\nyanvddctl.exe status
 out\nyanvddctl.exe plug 1920x1080@120
@@ -95,6 +96,14 @@ out\nyanvddctl.exe unplug all
 
 scripts\uninstall.ps1          # 全部戻す
 ```
+
+`install.ps1` は起動時とログオン時に `install-device` を叩き直すスケジュール
+タスク（`\nyan Real\nyanvdd device node`）も登録します。devnode は本来再起動を
+またいで残るものですが、ドライバーパッケージが入ったまま devnode だけが
+non-present になる事例が観測されており、その状態ではクライアントから
+「no nyanvdd device found」に見えます（何もアンインストールしていないのに）。
+タスクは冪等で、`uninstall.ps1` が削除します。詳細は
+[docs/design.ja.md](docs/design.ja.md) の「デバイスノードの自動復元」。
 
 本ドライバーはユーザーモードのみ（カーネルコードなし）。自己署名フローでは
 インストーラが発行元証明書をマシンの Root / TrustedPublisher に追加します —

@@ -96,8 +96,9 @@ Install (elevated PowerShell, from this folder):
 
     .\install.ps1
 
-That trusts the signing certificate below, installs the driver, and creates
-the device node. Then, from any normal (non-elevated) prompt:
+That trusts the signing certificate below, installs the driver, creates the
+device node, and registers a scheduled task that recreates that node at boot
+and logon. Then, from any normal (non-elevated) prompt:
 
     .\nyanvddctl.exe status
     .\nyanvddctl.exe plug 1920x1080@120
@@ -127,6 +128,10 @@ NOTES
   explicitly when that happens. Test from the machine's own console.
 * Driver log: C:\ProgramData\nyan-real-vdd\driver.log
   (rotates into driver.log.old at 1 MiB; send both when reporting an issue)
+* If a tool ever says "no nyanvdd device found" while the driver is still
+  installed, the device node went missing. Run 'install.ps1' again, or just
+  '.\nyanvddctl.exe install-device' elevated. The task that install.ps1
+  registers ('\nyan Real\nyanvdd device node') does this at boot and logon.
 "@ | Set-Content (Join-Path $Staging 'README.txt') -Encoding UTF8
 
 $Zip = Join-Path $OutDir "$Name.zip"
@@ -187,6 +192,12 @@ NOTES
 * Over Remote Desktop the monitors are created on the CONSOLE session's
   desktop and are not visible in the remote session. nyanvddctl says so
   explicitly when that happens. Test from the machine's own console.
+* Setup registered a scheduled task, "\nyan Real\nyanvdd device node", which
+  recreates the virtual display's device node at boot and at logon. If a tool
+  ever says "no nyanvdd device found" while the driver is still installed,
+  that node went missing; the task restores it on the next logon, or run
+  "%ProgramData%\nyan-real-vdd\nyanvddctl.exe" install-device elevated.
+  Uninstalling removes the task.
 * Driver log:    C:\ProgramData\nyan-real-vdd\driver.log
                  (rotates into driver.log.old at 1 MiB; send both with reports)
 * Setup logs:    C:\ProgramData\nyan-real-vdd\install.log
