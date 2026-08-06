@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 nyan Real
+//
 // nyan Real Virtual Display Driver — public control protocol
 //
 // This header is the single source of truth for the contract between the

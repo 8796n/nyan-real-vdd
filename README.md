@@ -125,6 +125,8 @@ reference implementation.
 
 ## License
 
-MIT. Portions derived from the Microsoft
+This project's own code is MIT. Portions of `driver/src/Driver.cpp`,
+`driver/src/Driver.h` and `driver/nyanvdd.inf` are derived from the Microsoft
 [Windows-driver-samples](https://github.com/microsoft/Windows-driver-samples)
-IndirectDisplay sample (MIT). See [LICENSE](LICENSE).
+IndirectDisplay sample, which is published under the Microsoft Public License
+(MS-PL). See [LICENSE](LICENSE).

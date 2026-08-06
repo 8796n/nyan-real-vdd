@@ -82,6 +82,15 @@ Copy-Item $Ctl $Staging -Force
 Copy-Item (Join-Path $PSScriptRoot 'install.ps1') $Staging -Force
 Copy-Item (Join-Path $PSScriptRoot 'uninstall.ps1') $Staging -Force
 
+# License notices travel with the binaries. Our own MIT terms ask for the
+# copyright and permission notice in all copies, and the driver carries
+# portions derived from the Microsoft Windows-driver-samples IndirectDisplay
+# sample, whose MS-PL asks for the attribution notices to be retained in any
+# distribution - so ship both texts instead of only naming them.
+Copy-Item (Join-Path $RepoRoot 'LICENSE') $Staging -Force
+Copy-Item (Join-Path $RepoRoot 'third_party\Windows-driver-samples\LICENSE') `
+    (Join-Path $Staging 'LICENSE-Windows-driver-samples') -Force
+
 $Signer = $CatSignature.SignerCertificate
 $SignerLine = if ($Signer) { "$($Signer.Subject)  (thumbprint $($Signer.Thumbprint))" } else { 'unknown' }
 
@@ -132,6 +141,13 @@ NOTES
   installed, the device node went missing. Run 'install.ps1' again, or just
   '.\nyanvddctl.exe install-device' elevated. The task that install.ps1
   registers ('\nyan Real\nyanvdd device node') does this at boot and logon.
+
+LICENSE
+-------
+This software is MIT licensed - see LICENSE in this folder. Portions of the
+driver are derived from the Microsoft Windows-driver-samples IndirectDisplay
+sample, Copyright (c) Microsoft Corporation, published under the Microsoft
+Public License - see LICENSE-Windows-driver-samples in this folder.
 "@ | Set-Content (Join-Path $Staging 'README.txt') -Encoding UTF8
 
 $Zip = Join-Path $OutDir "$Name.zip"
