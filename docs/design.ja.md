@@ -159,6 +159,15 @@ Spatial Wall は仕様どおり ParsecVDisplay へ黙って縮退する（アプ
 次のログオンでタスクが復活させてしまう）。同ディレクトリのログは診断用なので
 消さない。
 
+なお `install.ps1` の再実行は、それ自体が復旧手段なので通らないと意味がない。
+`pnputil /add-driver` は「既にステージ済みで最新」のとき 259
+（`ERROR_NO_MORE_ITEMS`）を返すため、これを成功として扱う（2026-08-06 に
+実際この 259 で復旧手順が落ちた）。
+
+SYSTEM プリンシパルで登録するので、タスクの読み取り自体に管理者権限が要る
+（非昇格シェルからは `Get-ScheduledTask` に見えず `Get-ScheduledTaskInfo` は
+アクセス拒否になる）。タスクの存在確認や `LastTaskResult` の確認は昇格して行う。
+
 原因そのものは未確定なので、再発したら次を採る: クリーンアップ前後で
 `Get-PnpDevice -InstanceId SWD\NYANVDD\NYANVDD` の `Present` を記録して消える
 瞬間を捕まえる、またはストレージセンサー／SilentCleanup を止めて再発するか見る。
@@ -317,13 +326,21 @@ API）でダーティ矩形メタデータだけを読む計測ツールで、�
 - [x] watchdog の発火と自動解除（10s arm → 13s 放置 → 全 unplug + 自動解除。
       同日、時計を unbiased 化しスリープ誤発火を修正）
 
+2026-08-06 消化分（devnode 消失と自動復元 — 詳細は「デバイスノードの自動復元」節）:
+
+- [x] インストール済みの状態で `install.ps1` を再実行して最後まで通ること
+      （pnputil の 259 で落ちていたのを修正した上で確認）
+- [x] 復元タスクが SYSTEM（セッション0）で `install-device` に成功すること
+      （手動 `Start-ScheduledTask` → `LastTaskResult = 0`、devnode は
+      `Present = True`）。ただし present な状態での**再オープン**経路であって、
+      消失状態からの新規作成は下記のとおり未確認
+- [x] devnode がある状態でタスクが走っても壊さないこと（plug 済み2枚
+      0xACDF906C / 0xA8E6ADCC を維持したまま `install-device` が成功）
+
 未消化:
 
-- [ ] 復元タスクが SYSTEM（セッション0）で `install-device` に成功すること
-      — 手動 `Start-ScheduledTask` → `LastTaskResult = 0` かつ devnode が
-      `Present = True`（「デバイスノードの自動復元」節）
-- [ ] devnode がある状態でタスクが走っても壊さないこと（冪等性の確認。
-      plug 済みモニターを保持したまま2回実行）
+- [ ] 消失状態からタスクが実際に復活させること
+      （`remove-device` → タスク実行 → `Present = True`）
 - [ ] 再起動後にタスクが実際に発火して devnode が present になること
 - [ ] `uninstall.ps1` がタスクと `%ProgramData%` のコピーを消し、
       ログは残すこと
