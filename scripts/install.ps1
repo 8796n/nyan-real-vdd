@@ -107,6 +107,14 @@ pnputil /add-driver $Inf /install
 if ($LASTEXITCODE -eq 3010) {
     Write-Host 'driver staged; a reboot is required to complete the installation'
     $RebootRequired = $true
+} elseif ($LASTEXITCODE -eq 259) {
+    # 259 == ERROR_NO_MORE_ITEMS, which pnputil returns when it added nothing
+    # because the package is already staged and up to date ("Driver package
+    # added successfully. (Already exists in the system)" / "Driver packages
+    # added: 0"). That is what every re-run looks like — including the repair
+    # run that this script exists for when the device node goes missing — so
+    # treating it as a failure made the documented recovery path unusable.
+    Write-Host 'driver package already present and up to date'
 } elseif ($LASTEXITCODE -ne 0) {
     throw "pnputil /add-driver failed ($LASTEXITCODE)"
 }
