@@ -23,10 +23,30 @@ if (-not $SkipBuild) {
 
 $Inf = Join-Path $RepoRoot 'out\package\nyanvdd.inf'
 $Ctl = Join-Path $RepoRoot 'out\nyanvddctl.exe'
-$Elevated = "pnputil /add-driver '$Inf' /install; & '$Ctl' remove-device; Start-Sleep 2; & '$Ctl' install-device"
+$Elevated = @"
+& pnputil.exe /add-driver '$Inf' /install
+`$PnPResult = `$LASTEXITCODE
+if (`$PnPResult -eq 3010) { exit 3010 }
+if (`$PnPResult -ne 0 -and `$PnPResult -ne 259) { exit `$PnPResult }
 
-$Process = Start-Process pwsh -ArgumentList '-NoProfile', '-Command', $Elevated -Verb RunAs -PassThru -Wait
+& '$Ctl' remove-device
+`$CtlResult = `$LASTEXITCODE
+if (`$CtlResult -ne 0) { exit `$CtlResult }
+Start-Sleep -Seconds 2
+& '$Ctl' install-device
+`$CtlResult = `$LASTEXITCODE
+if (`$CtlResult -ne 0) { exit `$CtlResult }
+exit 0
+"@
+
+$Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Elevated))
+$Process = Start-Process pwsh -ArgumentList '-NoProfile', '-EncodedCommand', $Encoded -Verb RunAs -PassThru -Wait
+if ($Process.ExitCode -eq 3010) {
+    Write-Host 'Driver staged; reboot Windows to load the update.'
+    exit 3010
+}
 if ($Process.ExitCode -ne 0) { throw "elevated update failed ($($Process.ExitCode))" }
 
 Start-Sleep 2
 & $Ctl status
+if ($LASTEXITCODE -ne 0) { throw 'updated device did not become ready' }

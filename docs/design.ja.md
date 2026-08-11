@@ -28,8 +28,10 @@
     2026-07-23 実測で WGC のダーティ精度に効果なしと判明し**要求を廃止**
     （「差分キャプチャの実測」参照。`NYANVDD_CAP_PRECISE_DIRTY` は以後
     点灯しない）
-  - 1.9+ (`0x1900`): `IddCxSetRealtimeGPUPriority`（スワップチェーンごと、
-    SetDevice 直後に呼ぶ）
+  - ~~1.9+ (`0x1900`): `IddCxSetRealtimeGPUPriority`~~ — 2026-08-11 に廃止。
+    本ドライバーは GPU copy/encode を行わず、優先度を上げる実益がない一方、
+    swap-chain worker と device context の寿命を結合して teardown race を作って
+    いたため。`NYANVDD_CAP_RT_GPU_PRIORITY` は互換用に残るが点灯しない
   - 1.10+ (`0x1A00`): *2 系 DDI（`IDDCX_MONITOR_MODE2` / `IDDCX_TARGET_MODE2`、
     `IDDCX_WIRE_BITS_PER_COMPONENT`）で bpc を報告
 - 1.11（D3D12 / DisplayID / atomic I2C）は現状不要。必要になったら
@@ -172,6 +174,29 @@ SYSTEM プリンシパルで登録するので、タスクの読み取り自体�
 `Get-PnpDevice -InstanceId SWD\NYANVDD\NYANVDD` の `Present` を記録して消える
 瞬間を捕まえる、またはストレージセンサー／SilentCleanup を止めて再発するか見る。
 
+## Code 43 による仮想モニター消失（2026-08-11）
+
+上記 Code 45 とは別に、devnode とドライバーパッケージが残ったまま adapter が
+Code 43 (`CM_PROB_FAILED_POST_START`) になり、子 display だけが surprise removal
+される事象を確認した。System event 10121/10120/10111 と WDF dump では、IddCx
+watchdog が `WUDFVerifierFailure` で UMDF host を停止していた。再現した待ち先は
+2つで、どちらも IddCx callback 内の無期限処理だった。
+
+- Assign: callback 内の `D3D11CreateDevice` が NVIDIA user-mode driver 内で停止
+- Unassign: worker destructor の `WaitForSingleObject(INFINITE)` が停止
+  （worker は `AvSetMmThreadCharacteristicsW` 内）
+
+対策は callback を bounded にすること。Assign は event と self-owned worker の
+作成だけで成功を返し、D3D 初期化を worker へ移した。Unassign は stop event を
+set して即時に戻り、join しない。`AwaitingCommit → Initializing → Processing` を
+atomic に遷移させ、Initializing 中の Stop は callback 側、Processing 以後は
+worker 側だけが swap-chain を exactly once で削除する。これによりキャンセル不能な
+D3D 初期化が戻らなくても IddCx callback と swap-chain の解放を巻き込まない。
+worker は C++ object と DLL のみを自己保持し、device/monitor context は参照しない。
+
+本件の復旧は同じ bits の再インストールではなく、修正版への更新後に devnode を
+再作成する。Code 45 用の起動タスクは Code 43 を復旧できない。
+
 ## HDR10 の現状（準備あり・既定 SDR・FP16 はオプトイン）
 
 - a01+ / RayNeo Air 4 Pro など HDR10 パネル対応が動機。
@@ -226,8 +251,9 @@ Windows は物理サイズから視聴距離を推定し、大きいパネルを
 
 フレームは acquire → 即 release。本ドライバーのモニターは DWM に合成させ、
 アプリ（Windows.Graphics.Capture）に拾わせるための存在で、ピクセル輸送は
-しない。GPU コストは実質ゼロ。MMCSS "Distribution" + （1.9+）realtime GPU
-priority で遅延源にならないようにする。
+しない。GPU コストは実質ゼロ。2026-08-11 以降は MMCSS と realtime GPU priority
+を使わない。実益がない一方、外部 scheduler / device context を worker teardown
+へ持ち込み、IddCx callback watchdog の停止経路を増やすためである。
 
 ## 差分キャプチャの実測（dirty-probe）
 
@@ -305,6 +331,7 @@ API）でダーティ矩形メタデータだけを読む計測ツールで、�
 - [x] テーブル外解像度が実現する（`plug 1920x1200@60` → 実機で 1920x1200）
 - [x] 4K がテレビ扱いにならない（300% → 150%、アスペクト比も解像度に一致）
 - [x] `rt-gpu-priority` が unplug で消える（2枚 plug 中は点灯、0枚で消灯）
+      （この機能自体は 2026-08-11 に廃止。履歴として残す）
 - [x] 表現できないモードの拒否（4K@240 / 8K@60 が ERROR_INVALID_PARAMETER）
 - [x] ユニットテスト 914 件（`scripts/build.ps1` が毎回実行）
 
@@ -337,6 +364,17 @@ API）でダーティ矩形メタデータだけを読む計測ツールで、�
 - [x] devnode がある状態でタスクが走っても壊さないこと（plug 済み2枚
       0xACDF906C / 0xA8E6ADCC を維持したまま `install-device` が成功）
 
+2026-08-11 消化分（IddCx callback watchdog 修正、Z390 / Win11 IddCx 1.11）:
+
+- [x] 修正版 `20.51.15.864` へ更新し、Code 43 が解消すること
+      （`Present=True / CM_PROB_NONE`、live DLL hash と署名も package と一致）
+- [x] 2枚を `unplug all` → Spatial Wall のリコンサイルで再PLUG、を2周
+      （いずれも2秒以内に同じcookieで復元、20秒後も2枚 active、失敗eventなし）
+- [x] S3 スリープ→復帰を2周し、二重初期化・Code 43・
+      `WUDFVerifierFailure` が再発しないこと
+- [x] 復帰後、2枚が `DISPLAY5` / `DISPLAY6` へ約0.5秒で解決し、Spatial Wall が
+      物理1枚＋仮想2枚の構成へ約1.5秒で復帰すること
+
 未消化:
 
 - [ ] 消失状態からタスクが実際に復活させること
@@ -345,7 +383,7 @@ API）でダーティ矩形メタデータだけを読む計測ツールで、�
 - [ ] `uninstall.ps1` がタスクと `%ProgramData%` のコピーを消し、
       ログは残すこと
 - [ ] RDP 切断 → コンソール復帰でモニターがそのまま見えるか
-- [ ] S3/S4 復帰で二重初期化しないこと（再入ガードは入れたが実機未確認）
+- [ ] S4 復帰で二重初期化しないこと
 - [ ] watchdog armed のままスリープ → 復帰で誤発火しないこと
       （unbiased time + D0Entry リフレッシュ実装済み、実機未確認）
 - [ ] plug→即 kill→再起動→リコンサイルでゴーストが出ない
@@ -353,7 +391,6 @@ API）でダーティ矩形メタデータだけを読む計測ツールで、�
 - [ ] 選択中モードが preferred (@120Hz) になっているかの目視
 - [ ] `EnableFp16=1` + gamma ramp 実装後に「HDR を使用する」が出るか
 - [ ] 2台目マシン（N100）が 24H2 以上か確認して導入
-- [ ] スリープ/復帰でモニター構成が保持されるか
 - [ ] カーソルが捕捉画像のピクセルに実際に含まれるか（HW/SW、捕捉設定で
       違うか）の目視確認 — dirty-probe のハッシュはカーソル実験時には
       未実装だったため未検証

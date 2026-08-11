@@ -17,9 +17,9 @@
 
 #include <dxgi1_5.h>
 #include <d3d11_2.h>
-#include <avrt.h>
 #include <wrl.h>
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 
@@ -59,28 +59,51 @@ namespace nyan
         class SwapChainProcessor
         {
         public:
-            SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, std::unique_ptr<Direct3DDevice> Device, HANDLE NewFrameEvent);
+            SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, LUID RenderAdapter, HANDLE NewFrameEvent);
             ~SwapChainProcessor();
 
             SwapChainProcessor(const SwapChainProcessor&) = delete;
             SwapChainProcessor& operator=(const SwapChainProcessor&) = delete;
 
-            // Starts the processing thread after construction so allocation
-            // and Win32 handle failures can be reported without leaving an
-            // assigned swap-chain unowned.
+            // Starts a self-owned worker. The monitor context may release its
+            // reference immediately after Stop(); the worker keeps the object
+            // and driver DLL alive until all non-cancellable graphics calls
+            // have returned.
             HRESULT Start();
+            void Commit();
+            void Stop();
+            void Release();
 
         private:
+            friend class IndirectMonitorContext;
+
+            enum class Phase
+            {
+                AwaitingCommit,
+                Initializing,
+                Processing,
+                StopRequested,
+                Finished,
+            };
+
+            void AddRef();
+            void DeleteSwapChainOnce();
+            bool IsFinished() const;
             static DWORD CALLBACK RunThread(LPVOID Argument);
             void Run();
             void RunCore();
 
+            volatile LONG m_RefCount = 1; // monitor context + worker
             IDDCX_SWAPCHAIN m_hSwapChain;
+            LUID m_RenderAdapter;
             std::unique_ptr<Direct3DDevice> m_Device;
             HANDLE m_hAvailableBufferEvent;
             HANDLE m_hThread = nullptr;
+            HANDLE m_hCommitEvent = nullptr;
             HANDLE m_hTerminateEvent = nullptr;
-            bool m_RtPriorityHeld = false;
+            HMODULE m_Module = nullptr;
+            std::atomic<Phase> m_Phase = Phase::AwaitingCommit;
+            std::atomic<bool> m_SwapChainDeleted = false;
         };
 
         struct MonitorSlot
@@ -120,19 +143,11 @@ namespace nyan
             NTSTATUS SetWatchdog(UINT32 TimeoutMs);
             void PetWatchdog();
 
-            // NYANVDD_CAP_RT_GPU_PRIORITY reflects swap-chains that currently
-            // hold realtime priority, so it has to be reference counted: it is
-            // acquired per swap-chain and must drop when the last one goes away
-            // (otherwise status keeps advertising it with no monitors plugged).
-            void AddRealtimeGpuPriorityRef();
-            void ReleaseRealtimeGpuPriorityRef();
-
             // Mode enumeration support (called from the DDI callbacks).
             // Copies the slot for the given EDID into *SlotOut; returns false
             // if the EDID does not match a live slot.
             bool CopySlotByEdid(const void* Data, UINT32 Size, _Out_ MonitorSlot* SlotOut);
 
-            UINT32 OsVersion() const { return m_OsVersion; }
             bool Hdr10Ready() const { return (m_CapFlags & NYANVDD_CAP_HDR10_READY) != 0; }
 
             static IndirectDeviceContext* Get(WDFDEVICE Device);
@@ -147,7 +162,6 @@ namespace nyan
             bool m_AdapterReady = false;
             UINT32 m_OsVersion = 0;   // IDDCX_VERSION from IddCxGetVersion, 0 if unavailable
             UINT32 m_CapFlags = 0;    // NYANVDD_CAP_*
-            UINT32 m_RtPriorityRefs = 0;
             UINT32 m_AdapterState = NYANVDD_ADAPTER_STATE_STARTING;
             bool m_AdapterInitStarted = false;
 
@@ -169,11 +183,12 @@ namespace nyan
             IndirectMonitorContext() = default;
             ~IndirectMonitorContext();
 
-            void AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent);
+            NTSTATUS AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent);
             void UnassignSwapChain();
 
         private:
-            std::unique_ptr<SwapChainProcessor> m_ProcessingThread;
+            std::mutex m_Lock;
+            SwapChainProcessor* m_ProcessingThread = nullptr;
         };
     }
 }

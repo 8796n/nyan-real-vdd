@@ -24,10 +24,11 @@ VDD でも動きますが、ゴーストモニター・インデックス衝突�
   を unplug）します。孤児掃除が欲しい場合のみ任意のウォッチドッグ
   （10秒以上・任意の制御呼び出しでリフレッシュ）を使えます。
 - **対応 OS は Windows 11 24H2 以上（IddCx 1.10 フロア）。** それより古い
-  Windows は全て EOL のため、未検証の荷物として抱えません。フレーム経路の
-  realtime GPU priority は常時有効、1.10 超の機能（IddCx 1.11 の D3D12 等）
-  はランタイム検出です。（precise present regions は実測で WGC のダーティ
-  矩形に効果がないと判明したため要求しません — docs/design.ja.md 参照。）
+  Windows は全て EOL のため、未検証の荷物として抱えません。フレーム経路は
+  surface を acquire/release するだけで GPU copy/encode は行いません。1.10 超の
+  機能（IddCx 1.11 の D3D12 等）はランタイム検出です。（precise present
+  regions は実測で WGC のダーティ矩形に効果がないと判明したため要求しません
+  — docs/design.ja.md 参照。）
 
 ## 構成
 

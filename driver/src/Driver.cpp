@@ -228,9 +228,8 @@ struct IndirectMonitorContextWrapper
 WDF_DECLARE_CONTEXT_TYPE(IndirectDeviceContextWrapper);
 WDF_DECLARE_CONTEXT_TYPE(IndirectMonitorContextWrapper);
 
-// This driver manages exactly one adapter device. The swap-chain thread uses
-// this to reach the adapter for the realtime-GPU-priority call without
-// threading the pointer through every layer.
+// This driver manages exactly one adapter device. Mode callbacks do not carry
+// an adapter handle, so they use this to resolve the monitor cookie in its EDID.
 static IndirectDeviceContext* g_DeviceContext = nullptr;
 
 extern "C" BOOL WINAPI DllMain(
@@ -401,22 +400,20 @@ HRESULT Direct3DDevice::Init()
 
 #pragma region SwapChainProcessor
 
-SwapChainProcessor::SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, unique_ptr<Direct3DDevice> Device, HANDLE NewFrameEvent)
-    : m_hSwapChain(hSwapChain), m_Device(move(Device)), m_hAvailableBufferEvent(NewFrameEvent)
+SwapChainProcessor::SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, LUID RenderAdapter, HANDLE NewFrameEvent)
+    : m_hSwapChain(hSwapChain), m_RenderAdapter(RenderAdapter), m_hAvailableBufferEvent(NewFrameEvent)
 {
 }
 
 SwapChainProcessor::~SwapChainProcessor()
 {
-    if (m_hTerminateEvent)
-    {
-        SetEvent(m_hTerminateEvent);
-    }
-
     if (m_hThread)
     {
-        WaitForSingleObject(m_hThread, INFINITE);
         CloseHandle(m_hThread);
+    }
+    if (m_hCommitEvent)
+    {
+        CloseHandle(m_hCommitEvent);
     }
     if (m_hTerminateEvent)
     {
@@ -426,63 +423,170 @@ SwapChainProcessor::~SwapChainProcessor()
 
 HRESULT SwapChainProcessor::Start()
 {
-    if (m_hThread || m_hTerminateEvent)
+    if (m_hThread || m_hCommitEvent || m_hTerminateEvent)
     {
         return HRESULT_FROM_WIN32(ERROR_ALREADY_INITIALIZED);
     }
 
-    m_hTerminateEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!m_hTerminateEvent)
+    // Manual-reset events retain an Unassign that races worker initialization.
+    m_hCommitEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!m_hCommitEvent)
     {
         return HRESULT_FROM_WIN32(GetLastError());
     }
 
+    m_hTerminateEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!m_hTerminateEvent)
+    {
+        const HRESULT Hr = HRESULT_FROM_WIN32(GetLastError());
+        CloseHandle(m_hCommitEvent);
+        m_hCommitEvent = nullptr;
+        return Hr;
+    }
+
+    // D3D11CreateDevice cannot be cancelled. Keep this dedicated UMDF module
+    // loaded until the worker exits so a slow graphics stack cannot return into
+    // an unloaded driver after device teardown.
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+            reinterpret_cast<LPCWSTR>(&SwapChainProcessor::RunThread),
+            &m_Module))
+    {
+        const HRESULT Hr = HRESULT_FROM_WIN32(GetLastError());
+        CloseHandle(m_hTerminateEvent);
+        CloseHandle(m_hCommitEvent);
+        m_hTerminateEvent = nullptr;
+        m_hCommitEvent = nullptr;
+        return Hr;
+    }
+
+    AddRef(); // worker ownership
     m_hThread = CreateThread(nullptr, 0, RunThread, this, 0, nullptr);
     if (!m_hThread)
     {
         const HRESULT Hr = HRESULT_FROM_WIN32(GetLastError());
+        Release();
+        FreeLibrary(m_Module);
+        m_Module = nullptr;
         CloseHandle(m_hTerminateEvent);
+        CloseHandle(m_hCommitEvent);
         m_hTerminateEvent = nullptr;
+        m_hCommitEvent = nullptr;
         return Hr;
     }
 
     return S_OK;
 }
 
+void SwapChainProcessor::Commit()
+{
+    SetEvent(m_hCommitEvent);
+}
+
+void SwapChainProcessor::Stop()
+{
+    SetEvent(m_hTerminateEvent);
+
+    // D3D initialization cannot be cancelled. If it has not handed control to
+    // IddCx yet, take responsibility for releasing the swap-chain here so an
+    // Unassign callback never waits on the graphics stack. The CAS makes this
+    // mutually exclusive with the worker entering RunCore().
+    Phase Current = m_Phase.load();
+    while (Current == Phase::AwaitingCommit || Current == Phase::Initializing)
+    {
+        if (m_Phase.compare_exchange_weak(Current, Phase::StopRequested))
+        {
+            DeleteSwapChainOnce();
+            return;
+        }
+    }
+}
+
+void SwapChainProcessor::AddRef()
+{
+    InterlockedIncrement(&m_RefCount);
+}
+
+void SwapChainProcessor::Release()
+{
+    if (InterlockedDecrement(&m_RefCount) == 0)
+    {
+        delete this;
+    }
+}
+
+void SwapChainProcessor::DeleteSwapChainOnce()
+{
+    if (!m_SwapChainDeleted.exchange(true))
+    {
+        WdfObjectDelete((WDFOBJECT)m_hSwapChain);
+    }
+}
+
+bool SwapChainProcessor::IsFinished() const
+{
+    return m_Phase.load() == Phase::Finished;
+}
+
 DWORD CALLBACK SwapChainProcessor::RunThread(LPVOID Argument)
 {
-    reinterpret_cast<SwapChainProcessor*>(Argument)->Run();
-    return 0;
+    auto* Self = reinterpret_cast<SwapChainProcessor*>(Argument);
+    Self->Run();
+
+    // No instruction from this module may execute after the pin is released.
+    HMODULE Module = Self->m_Module;
+    Self->m_Module = nullptr;
+    Self->Release();
+    FreeLibraryAndExitThread(Module, 0);
 }
 
 void SwapChainProcessor::Run()
 {
-    // MMCSS keeps this thread scheduled sensibly under load.
-    DWORD AvTask = 0;
-    HANDLE AvTaskHandle = AvSetMmThreadCharacteristicsW(L"Distribution", &AvTask);
+    HANDLE StartEvents[] = { m_hCommitEvent, m_hTerminateEvent };
+    const DWORD StartResult = WaitForMultipleObjects(
+        ARRAYSIZE(StartEvents), StartEvents, FALSE, INFINITE);
+    const bool Committed = StartResult == WAIT_OBJECT_0;
 
-    RunCore();
-
-    // Release the realtime-priority reference before the swap-chain goes away,
-    // so status stops advertising the capability once the last one is gone.
-    if (m_RtPriorityHeld)
+    Phase Expected = Phase::AwaitingCommit;
+    if (Committed &&
+        m_Phase.compare_exchange_strong(Expected, Phase::Initializing) &&
+        WaitForSingleObject(m_hTerminateEvent, 0) == WAIT_TIMEOUT)
     {
-        m_RtPriorityHeld = false;
-        if (g_DeviceContext)
+        m_Device.reset(new (nothrow) Direct3DDevice(m_RenderAdapter));
+        if (!m_Device)
         {
-            g_DeviceContext->ReleaseRealtimeGpuPriorityRef();
+            NYVDD_LOG(L"Failed to allocate Direct3D device context");
+        }
+        else
+        {
+            const HRESULT DeviceHr = m_Device->Init();
+            if (FAILED(DeviceHr))
+            {
+                NYVDD_LOG(L"Direct3D device initialization failed: 0x%08X", DeviceHr);
+            }
+            else
+            {
+                // Stop() wins this transition while initialization is still in
+                // progress; once Processing wins, only this worker touches and
+                // releases the WDF swap-chain object.
+                Expected = Phase::Initializing;
+                if (m_Phase.compare_exchange_strong(Expected, Phase::Processing) &&
+                    WaitForSingleObject(m_hTerminateEvent, 0) == WAIT_TIMEOUT)
+                {
+                    RunCore();
+                }
+            }
         }
     }
 
-    // Deleting the swap-chain object kicks the system into providing a new
-    // one if the monitor is still active.
-    WdfObjectDelete((WDFOBJECT)m_hSwapChain);
-    m_hSwapChain = nullptr;
-
-    if (AvTaskHandle)
+    if (Committed)
     {
-        AvRevertMmThreadCharacteristics(AvTaskHandle);
+        // Stop() may already have released it while D3D was initializing.
+        // Exactly one side deletes it and prompts the OS to provide a new one
+        // if the monitor remains active.
+        DeleteSwapChainOnce();
     }
+    m_Phase.store(Phase::Finished);
 }
 
 void SwapChainProcessor::RunCore()
@@ -503,29 +607,13 @@ void SwapChainProcessor::RunCore()
         return;
     }
 
-#if IDDCX_VERSION_MINOR >= 9
-    // IddCx 1.9+ (Win11 22H2): raise this device's GPU work to realtime
-    // priority so frame processing is not queued behind application work.
-    // This is a latency-sensitive XR path; best effort on older OS/WDDM.
-    if (g_DeviceContext && g_DeviceContext->OsVersion() >= NYANVDD_OS_1_9)
-    {
-        IDARG_IN_SETREALTIMEGPUPRIORITY Priority = {};
-        Priority.pDevice = DxgiDevice.Get();
-        HRESULT PriorityHr = IddCxSetRealtimeGPUPriority(m_hSwapChain, &Priority);
-        if (SUCCEEDED(PriorityHr))
-        {
-            m_RtPriorityHeld = true;
-            g_DeviceContext->AddRealtimeGpuPriorityRef();
-        }
-        else
-        {
-            NYVDD_LOG(L"IddCxSetRealtimeGPUPriority failed: 0x%08X", PriorityHr);
-        }
-    }
-#endif
-
     for (;;)
     {
+        if (WaitForSingleObject(m_hTerminateEvent, 0) != WAIT_TIMEOUT)
+        {
+            break;
+        }
+
         ComPtr<IDXGIResource> AcquiredBuffer;
 
         IDARG_OUT_RELEASEANDACQUIREBUFFER Buffer = {};
@@ -1118,22 +1206,6 @@ NTSTATUS IndirectDeviceContext::SetWatchdog(UINT32 TimeoutMs)
     return STATUS_SUCCESS;
 }
 
-void IndirectDeviceContext::AddRealtimeGpuPriorityRef()
-{
-    lock_guard<mutex> Guard(m_Lock);
-    ++m_RtPriorityRefs;
-    m_CapFlags |= NYANVDD_CAP_RT_GPU_PRIORITY;
-}
-
-void IndirectDeviceContext::ReleaseRealtimeGpuPriorityRef()
-{
-    lock_guard<mutex> Guard(m_Lock);
-    if (m_RtPriorityRefs > 0 && --m_RtPriorityRefs == 0)
-    {
-        m_CapFlags &= ~NYANVDD_CAP_RT_GPU_PRIORITY;
-    }
-}
-
 void IndirectDeviceContext::PetWatchdog()
 {
     lock_guard<mutex> Guard(m_Lock);
@@ -1211,53 +1283,95 @@ void IndirectDeviceContext::WatchdogLoop()
 
 IndirectMonitorContext::~IndirectMonitorContext()
 {
-    m_ProcessingThread.reset();
+    UnassignSwapChain();
 }
 
-void IndirectMonitorContext::AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent)
+NTSTATUS IndirectMonitorContext::AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent)
 {
-    m_ProcessingThread.reset();
+    SwapChainProcessor* Old = nullptr;
+    SwapChainProcessor* Retired = nullptr;
+    SwapChainProcessor* Processor = nullptr;
+    HRESULT Hr = E_OUTOFMEMORY;
 
-    unique_ptr<Direct3DDevice> Device(new (nothrow) Direct3DDevice(RenderAdapter));
-    if (!Device)
     {
-        NYVDD_LOG(L"Failed to allocate Direct3D device context");
-        WdfObjectDelete(SwapChain);
-        return;
-    }
-
-    const HRESULT DeviceHr = Device->Init();
-    if (FAILED(DeviceHr))
-    {
-        // Delete the swap-chain so the OS generates a new one and retries.
-        NYVDD_LOG(L"Direct3D device initialization failed: 0x%08X", DeviceHr);
-        WdfObjectDelete(SwapChain);
-    }
-    else
-    {
-        unique_ptr<SwapChainProcessor> Processor(
-            new (nothrow) SwapChainProcessor(SwapChain, move(Device), NewFrameEvent));
-        if (!Processor)
+        lock_guard<mutex> Guard(m_Lock);
+        // A worker can release its chain after a frame-processing error without
+        // a separate Unassign callback. A subsequent Assign is the proof that
+        // IddCx has retired that chain, matching the Microsoft sample's reset-
+        // on-Assign behavior.
+        if (m_ProcessingThread && m_ProcessingThread->IsFinished())
         {
-            NYVDD_LOG(L"Failed to allocate swap-chain processor");
-            WdfObjectDelete(SwapChain);
-            return;
+            Retired = m_ProcessingThread;
+            m_ProcessingThread = nullptr;
         }
 
-        const HRESULT Hr = Processor->Start();
-        if (FAILED(Hr))
+        if (m_ProcessingThread)
         {
-            NYVDD_LOG(L"Failed to start swap-chain processor: 0x%08X", Hr);
-            WdfObjectDelete(SwapChain);
-            return;
+            // Unassign identifies only the monitor, not the swap-chain. Keep
+            // the old processor current until deleting its chain causes the OS
+            // to unassign it; accepting a replacement first would let that
+            // delayed Unassign tear down the replacement by mistake.
+            Old = m_ProcessingThread;
+            Old->AddRef();
         }
-        m_ProcessingThread = move(Processor);
+        else
+        {
+            Processor = new (nothrow) SwapChainProcessor(SwapChain, RenderAdapter, NewFrameEvent);
+            if (Processor)
+            {
+                Hr = Processor->Start();
+            }
+            if (SUCCEEDED(Hr))
+            {
+                m_ProcessingThread = Processor;
+                Processor->Commit();
+            }
+        }
     }
+
+    if (Retired)
+    {
+        Retired->Release();
+    }
+
+    if (Old)
+    {
+        // The callback has not accepted the new chain. Release the old one and
+        // let IddCx retry after its matching Unassign has removed it.
+        Old->Stop();
+        Old->Release();
+        return STATUS_GRAPHICS_INDIRECT_DISPLAY_ABANDON_SWAPCHAIN;
+    }
+
+    if (FAILED(Hr))
+    {
+        NYVDD_LOG(L"Failed to start swap-chain processor: 0x%08X", Hr);
+        if (Processor)
+        {
+            Processor->Release();
+        }
+        // The callback has not accepted ownership, so the OS still owns the
+        // swap-chain and the driver must not delete it here.
+        return STATUS_GRAPHICS_INDIRECT_DISPLAY_ABANDON_SWAPCHAIN;
+    }
+
+    return STATUS_SUCCESS;
 }
 
 void IndirectMonitorContext::UnassignSwapChain()
 {
-    m_ProcessingThread.reset();
+    SwapChainProcessor* Processor = nullptr;
+    {
+        lock_guard<mutex> Guard(m_Lock);
+        Processor = m_ProcessingThread;
+        m_ProcessingThread = nullptr;
+    }
+    if (Processor)
+    {
+        // Stop may release the swap-chain and synchronously re-enter IddCx.
+        Processor->Stop();
+        Processor->Release();
+    }
 }
 
 #pragma endregion
@@ -1533,8 +1647,8 @@ _Use_decl_annotations_
 NTSTATUS NyanVddMonitorAssignSwapChain(IDDCX_MONITOR MonitorObject, const IDARG_IN_SETSWAPCHAIN* pInArgs)
 {
     auto* pMonitorContextWrapper = WdfObjectGet_IndirectMonitorContextWrapper(MonitorObject);
-    pMonitorContextWrapper->pContext->AssignSwapChain(pInArgs->hSwapChain, pInArgs->RenderAdapterLuid, pInArgs->hNextSurfaceAvailable);
-    return STATUS_SUCCESS;
+    return pMonitorContextWrapper->pContext->AssignSwapChain(
+        pInArgs->hSwapChain, pInArgs->RenderAdapterLuid, pInArgs->hNextSurfaceAvailable);
 }
 
 _Use_decl_annotations_
