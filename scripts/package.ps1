@@ -226,10 +226,28 @@ NOTES
     if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
 
     $Setup = Join-Path $OutDir "nyan-real-vdd-$Build-windows-x64-installer.exe"
+
+    # The installer carries a signed driver package, so it is signed with the
+    # same key: a setup program from an unknown publisher handing Windows a
+    # package from a named one is a worse story than either half alone, and the
+    # thumbprint the READMEs tell people to check is then the only one on the
+    # whole download. This does not silence SmartScreen - that is reputation
+    # based, and a self-signed publisher has none. See docs\signing.ja.md.
+    if (-not $Signer) { throw 'cannot sign the installer: the catalog signer is unknown' }
+    $SignTool = Get-ChildItem -Path (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin') `
+        -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match '\\x64\\' } |
+        Sort-Object FullName -Descending | Select-Object -First 1
+    if (-not $SignTool) { throw 'signtool.exe not found under Windows Kits' }
+    & $SignTool.FullName sign /fd sha256 /sha1 $Signer.Thumbprint `
+        /tr http://timestamp.digicert.com /td sha256 $Setup
+    if ($LASTEXITCODE -ne 0) { throw 'signtool failed on the installer' }
+
     Write-Host ''
     Write-Host "OK: $Setup"
-    Write-Host '    (unsigned: sign it before handing it to anyone else, or'
-    Write-Host '     SmartScreen will warn on first run)'
+    Write-Host '    (signed with the same certificate as the driver; SmartScreen'
+    Write-Host '     still warns on first run - a self-signed publisher has no'
+    Write-Host '     reputation)'
 } else {
     Write-Warning 'Inno Setup (ISCC.exe) not found - skipped the installer (portable ZIP still built).'
 }
