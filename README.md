@@ -123,6 +123,13 @@ self-contained C header. Open the device interface
 `GET_STATUS`, `PLUG`, `UNPLUG`, `LIST`, `SET_WATCHDOG`. `nyanvddctl.cpp` is the
 reference implementation.
 
+Protocol v4 adds an **administrator-only experimental GPU capture channel**.
+Normal applications still use WGC. The v3 control layouts are unchanged; the
+updated CLI accepts v3 and v4. Consumers such as Spatial Wall must synchronize
+their copy of `include/nyanvdd_protocol.h` and accept these two known control
+versions before installing this driver. See [GPU capture experiments](docs/gpu-capture.md)
+for the scope, executable checks and measurements. This is not a release claim.
+
 ## License
 
 This project's own code is MIT. Portions of `driver/src/Driver.cpp`,

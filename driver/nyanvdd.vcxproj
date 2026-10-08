@@ -12,6 +12,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\Driver.cpp" />
+    <ClCompile Include="src\FrameShare.cpp" />
     <ClCompile Include="src\Edid.cpp" />
   </ItemGroup>
   <ItemGroup>

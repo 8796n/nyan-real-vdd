@@ -112,6 +112,14 @@ non-present になる事例が観測されており、その状態ではクラ�
 ように）。ストア的にクリーンな配布は EV + Microsoft attestation 署名に署名
 工程だけ差し替えれば成立します（`docs/signing.ja.md`）。
 
+## GPU画像共有の試験経路
+
+プロトコルv4に、**管理者限定の診断用GPU画像共有**を追加した。通常アプリの取得はWGCを維持する。
+v3の制御レイアウトは変更しておらず、更新後のCLIはv3/v4を受け付ける。
+Spatial Wall等のconsumerは、ドライバー更新前に `include/nyanvdd_protocol.h` のコピーを同期し、
+この2版の制御互換性へ対応すること。[試験範囲・検証・測定記録](docs/gpu-capture.md)を参照。
+現段階の試作を製品向けの性能・安全性検証済みリリースとは扱わない。
+
 ## ライセンス
 
 本プロジェクト自身のコードは MIT。`driver/src/Driver.cpp` /

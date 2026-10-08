@@ -58,6 +58,9 @@ using namespace winrt::Windows::Graphics::Capture;
 using namespace winrt::Windows::Graphics::DirectX;
 using namespace winrt::Windows::Graphics::DirectX::Direct3D11;
 
+int CaptureShareSelfTest();
+int RunCaptureBench(HMONITOR, const RECT&, UINT32, bool, int, int, int, DWORD);
+
 namespace
 {
     void PrintUsage()
@@ -66,6 +69,10 @@ namespace
             L"dirty-probe — measure WGC dirty regions on one monitor\n"
             L"\n"
             L"  dirty-probe --list\n"
+            L"  dirty-probe --share-self-test\n"
+            L"  dirty-probe --capture-bench <wgc|shared> --monitor <name> [--cookie <hex>]\n"
+            L"              [--driver-pid <pid>] --seconds 10 [--stimulus 64@60]\n"
+            L"  shared capture requires elevation; omit stimulus for an idle test.\n"
             L"  dirty-probe [options]\n"
             L"\n"
             L"  --monitor <name|n>   \\\\.\\DISPLAYn, DISPLAYn or just n (default: primary)\n"
@@ -301,6 +308,7 @@ int wmain(int argc, wchar_t** argv)
     // Physical-pixel coordinates everywhere (monitor rects, SetCursorPos,
     // stimulus placement) — without this a scaled monitor skews all of them.
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    if (argc == 2 && wcscmp(argv[1], L"--share-self-test") == 0) return CaptureShareSelfTest();
 
     const wchar_t* MonitorArg = nullptr;
     const wchar_t* CsvPath = nullptr;
@@ -313,10 +321,20 @@ int wmain(int argc, wchar_t** argv)
     bool HashFrames = false;
     ProbeMode Mode = ProbeMode::Report;
     int MinUpdateMs = 0;
+    bool CaptureBench = false, Shared = false;
+    UINT32 Cookie = 0;
+    DWORD DriverPid = 0;
 
     for (int i = 1; i < argc; ++i)
     {
         if (wcscmp(argv[i], L"--list") == 0) { ListOnly = true; }
+        else if (wcscmp(argv[i], L"--capture-bench") == 0 && i + 1 < argc) {
+            CaptureBench = true;
+            ++i; Shared = wcscmp(argv[i], L"shared") == 0;
+            if (!Shared && wcscmp(argv[i], L"wgc") != 0) return 2;
+        }
+        else if (wcscmp(argv[i], L"--cookie") == 0 && i + 1 < argc) { Cookie = wcstoul(argv[++i], nullptr, 0); }
+        else if (wcscmp(argv[i], L"--driver-pid") == 0 && i + 1 < argc) { DriverPid = wcstoul(argv[++i], nullptr, 0); }
         else if (wcscmp(argv[i], L"--monitor") == 0 && i + 1 < argc) { MonitorArg = argv[++i]; }
         else if (wcscmp(argv[i], L"--seconds") == 0 && i + 1 < argc) { Seconds = _wtoi(argv[++i]); }
         else if (wcscmp(argv[i], L"--no-cursor") == 0) { CursorCapture = false; }
@@ -378,6 +396,12 @@ int wmain(int argc, wchar_t** argv)
     }
 
     init_apartment(apartment_type::multi_threaded);
+
+    if (CaptureBench) {
+        if (Seconds > 120 || (Shared && !Cookie)) return 2;
+        return RunCaptureBench(Monitor->Handle, Monitor->Rect, Cookie, Shared,
+            Seconds, g_Stimulus.Size, g_Stimulus.Hz, DriverPid);
+    }
 
     // D3D device for the frame pool. The frames are never read back — only
     // their metadata (timing + dirty regions) matters here.

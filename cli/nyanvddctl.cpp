@@ -476,10 +476,11 @@ namespace
             Status.AdapterState == NYANVDD_ADAPTER_STATE_FAILED ? L"FAILED (IddCx refused the adapter)" :
             L"starting";
         wprintf(L"adapter    : %s\n", State);
-        wprintf(L"caps       :%s%s%s%s\n",
+        wprintf(L"caps       :%s%s%s%s%s\n",
                 (Status.CapFlags & NYANVDD_CAP_HDR10_READY) ? L" hdr10-ready" : L"",
                 (Status.CapFlags & NYANVDD_CAP_RT_GPU_PRIORITY) ? L" rt-gpu-priority" : L"",
                 (Status.CapFlags & NYANVDD_CAP_PRECISE_DIRTY) ? L" precise-dirty" : L"",
+                (Status.CapFlags & NYANVDD_CAP_SHARED_CAPTURE) ? L" shared-capture(admin)" : L"",
                 (Status.CapFlags == 0) ? L" (none)" : L"");
         wprintf(L"watchdog   : %s (%u ms)\n", Status.WatchdogTimeoutMs ? L"armed" : L"off",
                 Status.WatchdogTimeoutMs);
@@ -661,7 +662,7 @@ int wmain(int argc, wchar_t** argv)
             CloseHandle(Device);
             return 1;
         }
-        if (Probe.ProtocolVersion != NYANVDD_PROTOCOL_VERSION)
+        if (!NyanVddControlProtocolSupported(Probe.ProtocolVersion))
         {
             fwprintf(stderr,
                      L"protocol mismatch: driver speaks v%u, this tool speaks v%u.\n"

@@ -26,6 +26,7 @@
 #include <winioctl.h>
 #include "../../include/nyanvdd_protocol.h"
 #include "Edid.h"
+#include "FrameShare.h"
 
 #define NYANVDD_DRIVER_VERSION_MAJOR 0
 #define NYANVDD_DRIVER_VERSION_MINOR 1
@@ -59,7 +60,8 @@ namespace nyan
         class SwapChainProcessor
         {
         public:
-            SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, LUID RenderAdapter, HANDLE NewFrameEvent);
+            SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, LUID RenderAdapter, HANDLE NewFrameEvent,
+                               std::shared_ptr<CaptureBinding> Capture);
             ~SwapChainProcessor();
 
             SwapChainProcessor(const SwapChainProcessor&) = delete;
@@ -104,6 +106,7 @@ namespace nyan
             HMODULE m_Module = nullptr;
             std::atomic<Phase> m_Phase = Phase::AwaitingCommit;
             std::atomic<bool> m_SwapChainDeleted = false;
+            std::shared_ptr<CaptureBinding> m_Capture;
         };
 
         struct MonitorSlot
@@ -114,6 +117,8 @@ namespace nyan
             NYANVDD_PLUG_IN Params = {};
             IDDCX_MONITOR Monitor = nullptr;
             BYTE Edid[128] = {};
+            std::shared_ptr<CaptureBinding> Capture;
+            WDFFILEOBJECT CaptureOwner = nullptr;
         };
 
         /// Per-device state: the IddCx adapter, the monitor slot table and the
@@ -131,6 +136,8 @@ namespace nyan
             NTSTATUS Plug(const NYANVDD_PLUG_IN& In, _Out_ UINT32* ConnectorIndexOut);
             NTSTATUS Unplug(UINT32 Cookie); // 0 = all
             void List(_Out_ NYANVDD_LIST_OUT* Out);
+            NTSTATUS OpenCapture(UINT32 Cookie, WDFFILEOBJECT Owner, NYANVDD_CAPTURE_OUT* Out);
+            void CloseCapture(WDFFILEOBJECT Owner);
 
             // Records which monitors the OS is actually driving, from the
             // committed display paths. Monitors absent from the list are
@@ -180,7 +187,8 @@ namespace nyan
         class IndirectMonitorContext
         {
         public:
-            IndirectMonitorContext() = default;
+            explicit IndirectMonitorContext(std::shared_ptr<CaptureBinding> Capture)
+                : m_Capture(std::move(Capture)) {}
             ~IndirectMonitorContext();
 
             NTSTATUS AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent);
@@ -189,6 +197,7 @@ namespace nyan
         private:
             std::mutex m_Lock;
             SwapChainProcessor* m_ProcessingThread = nullptr;
+            std::shared_ptr<CaptureBinding> m_Capture;
         };
     }
 }

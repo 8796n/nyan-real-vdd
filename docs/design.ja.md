@@ -249,11 +249,15 @@ Windows は物理サイズから視聴距離を推定し、大きいパネルを
 
 ## スワップチェーン処理
 
-フレームは acquire → 即 release。本ドライバーのモニターは DWM に合成させ、
+通常経路ではフレームは acquire → 即 release。本ドライバーのモニターは DWM に合成させ、
 アプリ（Windows.Graphics.Capture）に拾わせるための存在で、ピクセル輸送は
 しない。GPU コストは実質ゼロ。2026-08-11 以降は MMCSS と realtime GPU priority
 を使わない。実益がない一方、外部 scheduler / device context を worker teardown
 へ持ち込み、IddCx callback watchdog の停止経路を増やすためである。
+
+2026-10-08に、管理者の診断クライアントが接続した画面だけ共有GPU ringへコピーする
+[比較用経路](gpu-capture.md)を追加した。通常アプリは引き続きWGCを使い、
+診断接続がないと共有用textureを確保・コピーしない。
 
 ## 差分キャプチャの実測（dirty-probe）
 

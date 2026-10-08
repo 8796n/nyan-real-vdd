@@ -530,6 +530,11 @@ namespace
 
 int main()
 {
+    CHECK(NyanVddControlProtocolSupported(3) && NyanVddControlProtocolSupported(4), "v3/v4 control compatibility");
+    CHECK(!NyanVddControlProtocolSupported(2) && !NyanVddControlProtocolSupported(5), "unknown protocol rejected");
+    static_assert(sizeof(NYANVDD_STATUS_OUT) == 32, "v3 status layout unchanged");
+    static_assert(sizeof(NYANVDD_CAPTURE_METADATA) == 144, "capture metadata ABI");
+    static_assert(offsetof(NYANVDD_CAPTURE_METADATA, FramesSeen) % 8 == 0, "atomic counters aligned");
     TestContainerIdCorrelation();
     TestEdidIdentityConstants();
     TestMonitorFlagNamespaces();

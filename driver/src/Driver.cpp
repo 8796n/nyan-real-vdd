@@ -232,6 +232,36 @@ WDF_DECLARE_CONTEXT_TYPE(IndirectMonitorContextWrapper);
 // an adapter handle, so they use this to resolve the monitor cookie in its EDID.
 static IndirectDeviceContext* g_DeviceContext = nullptr;
 
+struct CaptureFileContext { volatile LONG Closing; };
+WDF_DECLARE_CONTEXT_TYPE(CaptureFileContext);
+
+static void CaptureFileCleanup(WDFFILEOBJECT File)
+{
+    InterlockedExchange(&WdfObjectGet_CaptureFileContext(File)->Closing, 1);
+    auto* Context = IndirectDeviceContext::Get(WdfFileObjectGetDevice(File));
+    if (Context) Context->CloseCapture(File);
+}
+
+static void CaptureAuthorize(WDFREQUEST, PVOID Result)
+{
+    SID_IDENTIFIER_AUTHORITY Authority = SECURITY_NT_AUTHORITY;
+    PSID Admins = nullptr;
+    BOOL Admin = FALSE;
+    HANDLE Token = nullptr;
+    DWORD Session = MAXDWORD, Bytes = 0;
+    if (AllocateAndInitializeSid(&Authority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+            DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &Admins)) {
+        CheckTokenMembership(nullptr, Admins, &Admin);
+        FreeSid(Admins);
+    }
+    if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &Token)) {
+        GetTokenInformation(Token, TokenSessionId, &Session, sizeof(Session), &Bytes);
+        CloseHandle(Token);
+    }
+    *static_cast<bool*>(Result) = Admin && Session != MAXDWORD &&
+        Session == WTSGetActiveConsoleSessionId();
+}
+
 extern "C" BOOL WINAPI DllMain(
     _In_ HINSTANCE hInstance,
     _In_ UINT dwReason,
@@ -303,6 +333,14 @@ NTSTATUS NyanVddDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT pDeviceInit)
     {
         return Status;
     }
+
+    WDF_FILEOBJECT_CONFIG FileConfig;
+    WDF_FILEOBJECT_CONFIG_INIT(&FileConfig, WDF_NO_EVENT_CALLBACK,
+        WDF_NO_EVENT_CALLBACK, CaptureFileCleanup);
+    FileConfig.FileObjectClass = WdfFileObjectWdfCannotUseFsContexts;
+    WDF_OBJECT_ATTRIBUTES FileAttributes;
+    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&FileAttributes, CaptureFileContext);
+    WdfDeviceInitSetFileObjectConfig(pDeviceInit, &FileConfig, &FileAttributes);
 
     WDF_OBJECT_ATTRIBUTES Attr;
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&Attr, IndirectDeviceContextWrapper);
@@ -400,8 +438,10 @@ HRESULT Direct3DDevice::Init()
 
 #pragma region SwapChainProcessor
 
-SwapChainProcessor::SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, LUID RenderAdapter, HANDLE NewFrameEvent)
-    : m_hSwapChain(hSwapChain), m_RenderAdapter(RenderAdapter), m_hAvailableBufferEvent(NewFrameEvent)
+SwapChainProcessor::SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, LUID RenderAdapter, HANDLE NewFrameEvent,
+                                     std::shared_ptr<CaptureBinding> Capture)
+    : m_hSwapChain(hSwapChain), m_RenderAdapter(RenderAdapter), m_hAvailableBufferEvent(NewFrameEvent),
+      m_Capture(std::move(Capture))
 {
 }
 
@@ -607,11 +647,21 @@ void SwapChainProcessor::RunCore()
         return;
     }
 
+    std::shared_ptr<FrameChannel> Channel;
+    std::unique_ptr<FramePublisher> Publisher;
+
     for (;;)
     {
         if (WaitForSingleObject(m_hTerminateEvent, 0) != WAIT_TIMEOUT)
         {
             break;
+        }
+
+        auto Requested = std::atomic_load(&m_Capture->Channel);
+        if (Requested && !Requested->Active()) Requested.reset();
+        if (Requested != Channel) {
+            Publisher.reset();
+            Channel = std::move(Requested);
         }
 
         ComPtr<IDXGIResource> AcquiredBuffer;
@@ -643,10 +693,26 @@ void SwapChainProcessor::RunCore()
         }
         else if (SUCCEEDED(hr))
         {
-            // The desktop image lives in DWM; the app captures it through
-            // Windows.Graphics.Capture. Nothing to transport here — release
-            // the surface immediately and tell the OS we are done.
             AcquiredBuffer.Attach(Buffer.MetaData.pSurface);
+            // Ordinary monitors still use WGC. Only a privileged diagnostic
+            // subscriber adds a copy; backpressure never waits on the reader.
+            if (Channel && Channel->Active()) {
+                ComPtr<ID3D11Texture2D> Texture;
+                HRESULT CaptureHr = Buffer.MetaData.HwProtectedSurface ? E_ACCESSDENIED
+                    : AcquiredBuffer.As(&Texture);
+                if (SUCCEEDED(CaptureHr) && !Publisher) {
+                    Publisher.reset(new (nothrow) FramePublisher());
+                    if (!Publisher) CaptureHr = E_OUTOFMEMORY;
+                    else {
+                        D3D11_TEXTURE2D_DESC Desc{}; Texture->GetDesc(&Desc);
+                        CaptureHr = Publisher->Init(Channel, m_Device->Device.Get(), Desc, m_RenderAdapter);
+                    }
+                }
+                if (SUCCEEDED(CaptureHr))
+                    CaptureHr = Publisher->Publish(m_Device->DeviceContext.Get(), Texture.Get(),
+                        Buffer.MetaData.PresentDisplayQPCTime);
+                if (FAILED(CaptureHr)) Channel->Fail(CaptureHr);
+            }
             AcquiredBuffer.Reset();
 
             hr = IddCxSwapChainFinishedProcessingFrame(m_hSwapChain);
@@ -661,6 +727,7 @@ void SwapChainProcessor::RunCore()
             break;
         }
     }
+    if (Channel) Channel->Stop();
 }
 
 #pragma endregion
@@ -863,9 +930,11 @@ void IndirectDeviceContext::OnAdapterInitFinished(NTSTATUS Status)
 NTSTATUS IndirectDeviceContext::CreateAndArriveMonitor(UINT ConnectorIndex)
 {
     BYTE Edid[128];
+    std::shared_ptr<CaptureBinding> Capture;
     {
         lock_guard<mutex> Guard(m_Lock);
         memcpy(Edid, m_Slots[ConnectorIndex].Edid, sizeof(Edid));
+        Capture = m_Slots[ConnectorIndex].Capture;
     }
 
     WDF_OBJECT_ATTRIBUTES Attr;
@@ -910,7 +979,7 @@ NTSTATUS IndirectDeviceContext::CreateAndArriveMonitor(UINT ConnectorIndex)
     }
 
     auto* pMonitorContextWrapper = WdfObjectGet_IndirectMonitorContextWrapper(MonitorCreateOut.MonitorObject);
-    pMonitorContextWrapper->pContext = new (nothrow) IndirectMonitorContext();
+    pMonitorContextWrapper->pContext = new (nothrow) IndirectMonitorContext(std::move(Capture));
     if (!pMonitorContextWrapper->pContext)
     {
         WdfObjectDelete(MonitorCreateOut.MonitorObject);
@@ -962,6 +1031,10 @@ NTSTATUS IndirectDeviceContext::Plug(const NYANVDD_PLUG_IN& In, UINT32* Connecto
         return STATUS_INVALID_PARAMETER;
     }
 
+    std::shared_ptr<CaptureBinding> Capture;
+    try { Capture = std::make_shared<CaptureBinding>(); }
+    catch (const std::bad_alloc&) { return STATUS_INSUFFICIENT_RESOURCES; }
+
     UINT Index = MAXUINT;
     {
         lock_guard<mutex> Guard(m_Lock);
@@ -993,6 +1066,7 @@ NTSTATUS IndirectDeviceContext::Plug(const NYANVDD_PLUG_IN& In, UINT32* Connecto
         Slot = {};
         Slot.Used = true;
         Slot.Params = In;
+        Slot.Capture = std::move(Capture);
         if (!(m_CapFlags & NYANVDD_CAP_HDR10_READY))
         {
             Slot.Params.Flags &= ~NYANVDD_PLUG_FLAG_HDR10;
@@ -1032,6 +1106,7 @@ NTSTATUS IndirectDeviceContext::Unplug(UINT32 Cookie)
             if (Slot.Used && (Cookie == 0 || Slot.Params.Cookie == Cookie))
             {
                 Found = true;
+                if (auto Channel = std::atomic_load(&Slot.Capture->Channel)) Channel->Stop();
                 if (Slot.Arrived && Slot.Monitor)
                 {
                     Targets[TargetCount++] = Slot.Monitor;
@@ -1080,6 +1155,42 @@ void IndirectDeviceContext::List(NYANVDD_LIST_OUT* Out)
     }
 }
 
+NTSTATUS IndirectDeviceContext::OpenCapture(UINT32 Cookie, WDFFILEOBJECT Owner, NYANVDD_CAPTURE_OUT* Out)
+{
+    if (!Cookie || !Owner) return STATUS_INVALID_PARAMETER;
+    lock_guard<mutex> Guard(m_Lock);
+    if (WdfObjectGet_CaptureFileContext(Owner)->Closing) return STATUS_CANCELLED;
+    for (const auto& Slot : m_Slots)
+        if (Slot.CaptureOwner == Owner) return STATUS_INVALID_DEVICE_STATE;
+    for (auto& Slot : m_Slots) {
+        if (!Slot.Arrived || Slot.Params.Cookie != Cookie) continue;
+        auto Current = std::atomic_load(&Slot.Capture->Channel);
+        if (Current && Current->Active()) return STATUS_DEVICE_BUSY;
+        std::shared_ptr<FrameChannel> Channel;
+        HRESULT Hr = FrameChannel::Create(Channel);
+        if (FAILED(Hr)) {
+            NYVDD_LOG(L"Capture channel creation failed: 0x%08X", Hr);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        wcscpy_s(Out->Name, Channel->Name);
+        Slot.CaptureOwner = Owner;
+        std::atomic_store(&Slot.Capture->Channel, std::move(Channel));
+        return STATUS_SUCCESS;
+    }
+    return STATUS_NOT_FOUND;
+}
+
+void IndirectDeviceContext::CloseCapture(WDFFILEOBJECT Owner)
+{
+    lock_guard<mutex> Guard(m_Lock);
+    for (auto& Slot : m_Slots) {
+        if (Slot.CaptureOwner != Owner) continue;
+        auto Channel = std::atomic_exchange(&Slot.Capture->Channel, std::shared_ptr<FrameChannel>{});
+        if (Channel) Channel->Stop();
+        Slot.CaptureOwner = nullptr;
+    }
+}
+
 void IndirectDeviceContext::SetActiveMonitors(const IDDCX_MONITOR* Monitors, UINT32 Count)
 {
     lock_guard<mutex> Guard(m_Lock);
@@ -1116,7 +1227,7 @@ void IndirectDeviceContext::FillStatus(NYANVDD_STATUS_OUT* Out)
 
     lock_guard<mutex> Guard(m_Lock);
     Out->IddCxOsVersion = m_OsVersion;
-    Out->CapFlags = m_CapFlags;
+    Out->CapFlags = m_CapFlags | NYANVDD_CAP_SHARED_CAPTURE;
     Out->WatchdogTimeoutMs = m_WatchdogTimeoutMs;
     Out->AdapterState = m_AdapterState;
     for (UINT i = 0; i < NYANVDD_MAX_MONITORS; ++i)
@@ -1316,7 +1427,7 @@ NTSTATUS IndirectMonitorContext::AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID
         }
         else
         {
-            Processor = new (nothrow) SwapChainProcessor(SwapChain, RenderAdapter, NewFrameEvent);
+            Processor = new (nothrow) SwapChainProcessor(SwapChain, RenderAdapter, NewFrameEvent, m_Capture);
             if (Processor)
             {
                 Hr = Processor->Start();
@@ -1675,6 +1786,25 @@ void NyanVddIoDeviceControl(WDFDEVICE Device, WDFREQUEST Request, size_t OutputB
 
     switch (IoControlCode)
     {
+    case IOCTL_NYANVDD_OPEN_CAPTURE:
+    {
+        NYANVDD_CAPTURE_IN* In = nullptr;
+        NYANVDD_CAPTURE_OUT* Out = nullptr;
+        Status = WdfRequestRetrieveInputBuffer(Request, sizeof(*In), (PVOID*)&In, nullptr);
+        if (NT_SUCCESS(Status))
+            Status = WdfRequestRetrieveOutputBuffer(Request, sizeof(*Out), (PVOID*)&Out, nullptr);
+        if (NT_SUCCESS(Status)) {
+            const UINT32 Cookie = In->Cookie; // METHOD_BUFFERED input/output can alias
+            bool Authorized = false;
+            Status = WdfRequestImpersonate(Request, SecurityIdentification, CaptureAuthorize, &Authorized);
+            if (NT_SUCCESS(Status) && !Authorized) Status = STATUS_ACCESS_DENIED;
+            if (NT_SUCCESS(Status)) {
+                Status = Context->OpenCapture(Cookie, WdfRequestGetFileObject(Request), Out);
+                if (NT_SUCCESS(Status)) Information = sizeof(*Out);
+            }
+        }
+        break;
+    }
     case IOCTL_NYANVDD_GET_STATUS:
     {
         NYANVDD_STATUS_OUT* Out = nullptr;

@@ -45,7 +45,14 @@ extern "C" {
 //     the container-id correlation helpers below became part of the contract.
 // v3: NYANVDD_MONITOR_INFO.Flags gained NYANVDD_MONITOR_FLAG_ACTIVE, which
 //     reports whether the OS is actually driving a plugged monitor.
-#define NYANVDD_PROTOCOL_VERSION 3
+// v4: optional administrator-only shared GPU capture diagnostics. v3 control
+//     layouts and semantics remain unchanged.
+#define NYANVDD_PROTOCOL_VERSION 4
+
+NYANVDD_INLINE int NyanVddControlProtocolSupported(UINT32 Version)
+{
+    return Version == 3 || Version == 4;
+}
 
 // Device interface exposed by the driver. Enumerate with
 // CM_Get_Device_Interface_ListW and open with CreateFileW
@@ -146,6 +153,7 @@ NYANVDD_INLINE UINT32 NyanVddCookieFromContainerId(const GUID* ContainerId)
 #define IOCTL_NYANVDD_UNPLUG       NYANVDD_IOCTL(2) // in: NYANVDD_UNPLUG_IN
 #define IOCTL_NYANVDD_LIST         NYANVDD_IOCTL(3) // out: NYANVDD_LIST_OUT
 #define IOCTL_NYANVDD_SET_WATCHDOG NYANVDD_IOCTL(4) // in: NYANVDD_WATCHDOG_IN
+#define IOCTL_NYANVDD_OPEN_CAPTURE NYANVDD_IOCTL(5) // in/out: capture structs below
 
 #pragma pack(push, 4)
 
@@ -158,6 +166,7 @@ NYANVDD_INLINE UINT32 NyanVddCookieFromContainerId(const GUID* ContainerId)
 #define NYANVDD_CAP_HDR10_READY     0x00000001u // OS IddCx >= 1.10: HDR-capable plumbing active
 #define NYANVDD_CAP_RT_GPU_PRIORITY 0x00000002u // OS IddCx >= 1.9: realtime GPU priority applied
 #define NYANVDD_CAP_PRECISE_DIRTY   0x00000004u // retired, see above
+#define NYANVDD_CAP_SHARED_CAPTURE  0x00000008u // v4, elevated diagnostics only
 
 // AdapterState: PLUG returns ERROR_NOT_READY both while the adapter is still
 // coming up and when it failed for good, so this is how a client tells a race
@@ -265,6 +274,56 @@ typedef struct NYANVDD_WATCHDOG_IN {
     UINT32 TimeoutMs;
 } NYANVDD_WATCHDOG_IN;
 
+#pragma pack(pop)
+
+// Experimental transport: one elevated consumer per cookie. OPEN_CAPTURE must
+// use a separate device handle; closing it stops publishing and frees the ring.
+// A standard application must continue using WGC. Protected frames are refused.
+// The names are driver-generated and ACL-limited to SYSTEM, LocalService and
+// Administrators. Suffixes: "-meta" for read-only metadata, "-0".."-2" for
+// BGRA8 textures (SHARED_NTHANDLE | SHARED_KEYEDMUTEX). Key 0 = producer, 1 = reader.
+// Never wait for a key. A reader drains stale READY slots and keeps the newest
+// slot leased through all GPU reads. Return key 0 after submitting those reads.
+// No free slot => skip publishing, never block IddCx or overwrite a reader.
+// Mode/device changes stop this generation; reopen the device handle to retry.
+#define NYANVDD_CAPTURE_SLOTS 3u
+#define NYANVDD_CAPTURE_NAME_CHARS 96u
+#define NYANVDD_CAPTURE_WAITING 0
+#define NYANVDD_CAPTURE_READY   1
+#define NYANVDD_CAPTURE_STOPPED 2
+#define NYANVDD_CAPTURE_FAILED  3
+
+#pragma pack(push, 8)
+typedef struct NYANVDD_CAPTURE_IN {
+    UINT32 Cookie;
+} NYANVDD_CAPTURE_IN;
+
+typedef struct NYANVDD_CAPTURE_OUT {
+    WCHAR Name[NYANVDD_CAPTURE_NAME_CHARS];
+} NYANVDD_CAPTURE_OUT;
+
+typedef struct NYANVDD_CAPTURE_SLOT {
+    volatile LONG64 Sequence;
+    LONG64 PresentQpc; // IddCx target display time, not acquisition/latency
+    LONG64 PublishQpc;
+} NYANVDD_CAPTURE_SLOT;
+
+typedef struct NYANVDD_CAPTURE_METADATA {
+    UINT32 ProtocolVersion;
+    volatile LONG State; // Interlocked publication; READY makes desc immutable
+    UINT32 Width;
+    UINT32 Height;
+    LUID AdapterLuid;
+    UINT32 SourceBindFlags;
+    UINT32 SourceMiscFlags;
+    HRESULT Error;
+    UINT32 DriverProcessId;
+    volatile LONG64 FramesSeen;
+    volatile LONG64 FramesPublished;
+    volatile LONG64 FramesSkipped;
+    volatile LONG64 SubmitQpcTicks; // CPU submit time, not GPU execution time
+    NYANVDD_CAPTURE_SLOT Slots[NYANVDD_CAPTURE_SLOTS];
+} NYANVDD_CAPTURE_METADATA;
 #pragma pack(pop)
 
 // Win32 error mapping of driver-side failures (via NTSTATUS):

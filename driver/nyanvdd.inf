@@ -62,6 +62,7 @@ Needs=WUDFRD.NT.Services
 UmdfService=nyanvdd,NyanVDD_Install_UmdfService
 UmdfServiceOrder=nyanvdd
 UmdfKernelModeClientPolicy = AllowKernelModeClients
+UmdfImpersonationLevel = Identification
 
 [NyanVDD_Install_UmdfService]
 UmdfLibraryVersion=$UMDFVERSION$
