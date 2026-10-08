@@ -42,6 +42,7 @@ struct SharedReader {
     ComPtr<IDXGIKeyedMutex> Mutexes[NYANVDD_CAPTURE_SLOTS];
     int Held = -1;
     LONG64 Sequence = 0;
+    LONG64 Returned[NYANVDD_CAPTURE_SLOTS]{};
 
     ~SharedReader() {
         if (Held >= 0) Mutexes[Held]->ReleaseSync(0);
@@ -104,15 +105,23 @@ struct SharedReader {
     bool Poll() {
         bool Changed = false;
         for (UINT i = 0; i < NYANVDD_CAPTURE_SLOTS; ++i) {
-            if (int(i) == Held) continue;
+            // Check each slot: an older in-flight slot must still be returned
+            // even after a newer frame has already been retained.
+            if (int(i) == Held || Meta->Slots[i].Sequence <= Returned[i]) continue;
             const HRESULT Hr = Mutexes[i]->AcquireSync(1, 0);
             if (Hr == WAIT_TIMEOUT) continue;
             if (Hr != S_OK) Check(FAILED(Hr) ? Hr : E_FAIL);
             const LONG64 Next = Meta->Slots[i].Sequence;
             if (Next > Sequence) {
-                if (Held >= 0) Check(Mutexes[Held]->ReleaseSync(0));
+                if (Held >= 0) {
+                    Check(Mutexes[Held]->ReleaseSync(0));
+                    Returned[Held] = Sequence;
+                }
                 Held = int(i); Sequence = Next; Changed = true;
-            } else Check(Mutexes[i]->ReleaseSync(0));
+            } else {
+                Check(Mutexes[i]->ReleaseSync(0));
+                Returned[i] = Next;
+            }
         }
         return Changed;
     }
@@ -235,6 +244,7 @@ int CaptureShareSelfTest() try {
             Sleep(1);
         }
     }
+    if (Reader.Poll()) return 1; // no publication: keep the retained frame
     Channel->Stop();
     if (Publish(47) != S_FALSE) return 1;
     printf("PASS GPU sharing: 2 D3D devices, retained pixels immutable, full-ring skip, 30 exact updates, stop\n");
