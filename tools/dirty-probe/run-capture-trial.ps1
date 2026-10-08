@@ -4,6 +4,7 @@ param(
     [switch]$UpdateDriver,
     [ValidateRange(2, 120)][int]$Seconds = 10,
     [ValidateRange(1, 10)][int]$Repeats = 3,
+    [ValidateRange(1, 1000)][int]$ReadbackEvery = 1,
     [string]$LogDir = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -65,7 +66,7 @@ try {
                 $Order = if ($Repeat % 2) { @('wgc', 'shared') } else { @('shared', 'wgc') }
                 foreach ($Transport in $Order) {
                     $ProbeArgs = @('--capture-bench', $Transport, '--cookie', $Cookie, '--monitor', $Monitor,
-                        '--seconds', $Seconds, '--driver-pid', $DriverId)
+                        '--seconds', $Seconds, '--driver-pid', $DriverId, '--readback-every', $ReadbackEvery)
                     if ($Stimulus -ne 'static') { $ProbeArgs += @('--stimulus', $Stimulus) }
                     $Name = "${Width}-${Stimulus}-${Repeat}-${Transport}"
                     Write-Host "Measuring $Name"
@@ -75,6 +76,34 @@ try {
                     if ($Result -ne 0) { throw "Measurement failed: $Name" }
                 }
             }
+        }
+        if ($Width -eq 3840) {
+            $ChildArgs = @('--capture-bench', 'shared', '--cookie', $Cookie, '--monitor', $Monitor,
+                '--seconds', '30', '--stimulus', '64@60')
+            $Child = Start-Process $Probe -ArgumentList $ChildArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $LogDir 'crash-reader.log')
+            Start-Sleep -Seconds 2
+            if ($Child.HasExited) { throw 'Crash-test reader exited before termination.' }
+            Stop-Process -Id $Child.Id -Force
+            if (-not $Child.WaitForExit(5000)) { throw 'Crash-test reader did not exit.' }
+            $Recovered = & $Probe --capture-bench shared --cookie $Cookie --monitor $Monitor --seconds 2 --stimulus 64@60
+            $Result = $LASTEXITCODE
+            $Recovered | Tee-Object -FilePath (Join-Path $LogDir 'after-crash.log') | Out-Host
+            if ($Result -ne 0) { throw 'File cleanup failed after reader termination.' }
+            $Child = Start-Process $Probe -ArgumentList $ChildArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $LogDir 'unplug-reader.log')
+            Start-Sleep -Seconds 2
+            if ($Child.HasExited) { throw 'Unplug-test reader exited before monitor removal.' }
+            & $Ctl unplug $Cookie
+            if ($LASTEXITCODE -ne 0) { throw 'Probe monitor cleanup failed.' }
+            $Plugged = $false
+            if (-not $Child.WaitForExit(5000)) {
+                Stop-Process -Id $Child.Id -Force
+                throw 'Reader did not observe monitor removal.'
+            }
+            if ($Child.ExitCode -ne 1 -or (Get-Content (Join-Path $LogDir 'unplug-reader.log') -Raw) -notmatch '0x887A0026') {
+                throw 'Reader did not report DXGI_ERROR_ACCESS_LOST on removal.'
+            }
+            Write-Host 'PASS reader termination cleanup and active monitor removal'
+            continue
         }
         & $Ctl unplug $Cookie
         if ($LASTEXITCODE -ne 0) { throw 'Probe monitor cleanup failed.' }

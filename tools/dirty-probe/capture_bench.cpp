@@ -254,7 +254,7 @@ int CaptureShareSelfTest() try {
 }
 
 int RunCaptureBench(HMONITOR Monitor, const RECT& Rect, UINT32 Cookie, bool Shared,
-                    int Seconds, int Size, int Hz, DWORD DriverPid) try {
+                    int Seconds, int Size, int Hz, DWORD DriverPid, int ReadbackEvery) try {
     struct TimerResolution {
         bool Active = timeBeginPeriod(1) == TIMERR_NOERROR;
         ~TimerResolution() { if (Active) timeEndPeriod(1); }
@@ -299,7 +299,7 @@ int RunCaptureBench(HMONITOR Monitor, const RECT& Rect, UINT32 Cookie, bool Shar
     HANDLE Dwm = OpenDwm(); ProcessHandle DwmGuard{Dwm};
     LONGLONG NextPaint = Start.QuadPart, MeasurementStart = 0;
     double CpuBegin = 0, DriverCpuBegin = 0, DwmCpuBegin = 0;
-    UINT LastSeen = 0; size_t Frames = 0, InvalidPixels = 0;
+    UINT LastSeen = 0; size_t Frames = 0, InvalidPixels = 0, Received = 0, Checked = 0;
     while (true) {
         LARGE_INTEGER Now{}; QueryPerformanceCounter(&Now);
         const double Elapsed = double(Now.QuadPart-Start.QuadPart)/Frequency.QuadPart;
@@ -335,7 +335,9 @@ int RunCaptureBench(HMONITOR Monitor, const RECT& Rect, UINT32 Cookie, bool Shar
         }
         QueryPerformanceCounter(&End);
         if (MeasurementStart) PollUs[New].push_back(double(End.QuadPart-Begin.QuadPart)*1e6/Frequency.QuadPart);
-        if (New) {
+        if (New && MeasurementStart) ++Frames;
+        if (New) ++Received;
+        if (New && (Received == 1 || Received % ReadbackEvery == 0)) {
             const D3D11_BOX Box{UINT(X+8), UINT(Y+8), 0, UINT(X+9), UINT(Y+9), 1};
             Context->CopySubresourceRegion(Stage.Get(), 0, 0, 0, 0, Texture.Get(), 0, &Box);
             D3D11_MAPPED_SUBRESOURCE Map{}; Check(Context->Map(Stage.Get(), 0, D3D11_MAP_READ, 0, &Map));
@@ -343,7 +345,7 @@ int RunCaptureBench(HMONITOR Monitor, const RECT& Rect, UINT32 Cookie, bool Shar
             QueryPerformanceCounter(&End);
             const UINT Id = ((Pixel>>16)&255) | (Pixel&0xff00);
             if (MeasurementStart) {
-                ++Frames;
+                ++Checked;
                 if ((Pixel&255) != 0x5a || Id == 0 || Id >= Painted.size()) ++InvalidPixels;
                 else if (Id > LastSeen) LatencyMs.push_back(double(End.QuadPart-Painted[Id])*1000/Frequency.QuadPart);
             }
@@ -353,6 +355,7 @@ int RunCaptureBench(HMONITOR Monitor, const RECT& Rect, UINT32 Cookie, bool Shar
     }
     printf("capture-bench transport=%s size=%dx%d stimulus=%d@%d seconds=%d frames=%zu marker_errors=%zu driver_pid=%lu\n",
         Shared ? "shared" : "wgc", Width, Height, Size, Hz, Seconds, Frames, InvalidPixels, DriverPid);
+    printf("pixel-check: every=%d checked=%zu\n", ReadbackEvery, Checked);
     printf("CPU ms: consumer=%.3f driver=%.3f dwm=%.3f (-1 if unavailable)\n",
         CpuMs(GetCurrentProcess())-CpuBegin, Driver ? CpuMs(Driver)-DriverCpuBegin : -1.0,
         Dwm ? CpuMs(Dwm)-DwmCpuBegin : -1.0);

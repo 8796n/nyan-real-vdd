@@ -59,7 +59,7 @@ using namespace winrt::Windows::Graphics::DirectX;
 using namespace winrt::Windows::Graphics::DirectX::Direct3D11;
 
 int CaptureShareSelfTest();
-int RunCaptureBench(HMONITOR, const RECT&, UINT32, bool, int, int, int, DWORD);
+int RunCaptureBench(HMONITOR, const RECT&, UINT32, bool, int, int, int, DWORD, int);
 
 namespace
 {
@@ -71,7 +71,7 @@ namespace
             L"  dirty-probe --list\n"
             L"  dirty-probe --share-self-test\n"
             L"  dirty-probe --capture-bench <wgc|shared> --monitor <name> [--cookie <hex>]\n"
-            L"              [--driver-pid <pid>] --seconds 10 [--stimulus 64@60]\n"
+            L"              [--driver-pid <pid>] --seconds 10 [--stimulus 64@60] [--readback-every 1]\n"
             L"  shared capture requires elevation; omit stimulus for an idle test.\n"
             L"  dirty-probe [options]\n"
             L"\n"
@@ -324,6 +324,7 @@ int wmain(int argc, wchar_t** argv)
     bool CaptureBench = false, Shared = false;
     UINT32 Cookie = 0;
     DWORD DriverPid = 0;
+    int ReadbackEvery = 1;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -335,6 +336,7 @@ int wmain(int argc, wchar_t** argv)
         }
         else if (wcscmp(argv[i], L"--cookie") == 0 && i + 1 < argc) { Cookie = wcstoul(argv[++i], nullptr, 0); }
         else if (wcscmp(argv[i], L"--driver-pid") == 0 && i + 1 < argc) { DriverPid = wcstoul(argv[++i], nullptr, 0); }
+        else if (wcscmp(argv[i], L"--readback-every") == 0 && i + 1 < argc) { ReadbackEvery = _wtoi(argv[++i]); }
         else if (wcscmp(argv[i], L"--monitor") == 0 && i + 1 < argc) { MonitorArg = argv[++i]; }
         else if (wcscmp(argv[i], L"--seconds") == 0 && i + 1 < argc) { Seconds = _wtoi(argv[++i]); }
         else if (wcscmp(argv[i], L"--no-cursor") == 0) { CursorCapture = false; }
@@ -398,9 +400,9 @@ int wmain(int argc, wchar_t** argv)
     init_apartment(apartment_type::multi_threaded);
 
     if (CaptureBench) {
-        if (Seconds > 120 || (Shared && !Cookie)) return 2;
+        if (Seconds > 120 || (Shared && !Cookie) || ReadbackEvery < 1 || ReadbackEvery > 1000) return 2;
         return RunCaptureBench(Monitor->Handle, Monitor->Rect, Cookie, Shared,
-            Seconds, g_Stimulus.Size, g_Stimulus.Hz, DriverPid);
+            Seconds, g_Stimulus.Size, g_Stimulus.Hz, DriverPid, ReadbackEvery);
     }
 
     // D3D device for the frame pool. The frames are never read back — only
