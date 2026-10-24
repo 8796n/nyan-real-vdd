@@ -125,10 +125,20 @@ reference implementation.
 
 Protocol v4 adds an **administrator-only experimental GPU capture channel**.
 Normal applications still use WGC. The v3 control layouts are unchanged; the
-updated CLI accepts v3 and v4. Consumers such as Spatial Wall must synchronize
-their copy of `include/nyanvdd_protocol.h` and accept these two known control
+updated CLI accepts v3, v4 and v5. Consumers such as Spatial Wall must synchronize
+their copy of `include/nyanvdd_protocol.h` and accept these three known control
 versions before installing this driver. See [GPU capture experiments](docs/gpu-capture.md)
 for the scope, executable checks and measurements. This is not a release claim.
+
+Protocol v5 adds a volatile render-GPU preference for explicit diagnostics.
+`nyanvddctl gpu-list` lists GPU LUIDs; `render-adapter` reports the preference
+and each cookie's observed swap-chain GPU. With the same access as plug/unplug,
+`render-adapter HIGH:LOW` requests that hexadecimal LUID, and `render-adapter auto`
+restores OS selection. The preference resets on driver restart and is not a
+guarantee: Windows can choose another GPU. Stop capture consumers before changing
+the preference and restart them afterwards: live GPU changes can leave existing
+WGC captures frozen even when the virtual screens remain active. Spatial Wall's
+vendored protocol header must be updated first.
 
 ## License
 

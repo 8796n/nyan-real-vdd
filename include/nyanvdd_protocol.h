@@ -47,11 +47,13 @@ extern "C" {
 //     reports whether the OS is actually driving a plugged monitor.
 // v4: optional administrator-only shared GPU capture diagnostics. v3 control
 //     layouts and semantics remain unchanged.
-#define NYANVDD_PROTOCOL_VERSION 4
+// v5: volatile render-adapter preference and actual per-cookie adapter queries.
+//     Existing v3/v4 layouts and control semantics remain unchanged.
+#define NYANVDD_PROTOCOL_VERSION 5
 
 NYANVDD_INLINE int NyanVddControlProtocolSupported(UINT32 Version)
 {
-    return Version == 3 || Version == 4;
+    return Version == 3 || Version == 4 || Version == 5;
 }
 
 // Device interface exposed by the driver. Enumerate with
@@ -154,6 +156,8 @@ NYANVDD_INLINE UINT32 NyanVddCookieFromContainerId(const GUID* ContainerId)
 #define IOCTL_NYANVDD_LIST         NYANVDD_IOCTL(3) // out: NYANVDD_LIST_OUT
 #define IOCTL_NYANVDD_SET_WATCHDOG NYANVDD_IOCTL(4) // in: NYANVDD_WATCHDOG_IN
 #define IOCTL_NYANVDD_OPEN_CAPTURE NYANVDD_IOCTL(5) // in/out: capture structs below
+#define IOCTL_NYANVDD_SET_RENDER_ADAPTER NYANVDD_IOCTL(6) // in: NYANVDD_RENDER_ADAPTER_IN
+#define IOCTL_NYANVDD_GET_RENDER_ADAPTER NYANVDD_IOCTL(7) // out: NYANVDD_RENDER_ADAPTER_OUT
 
 #pragma pack(push, 4)
 
@@ -167,6 +171,7 @@ NYANVDD_INLINE UINT32 NyanVddCookieFromContainerId(const GUID* ContainerId)
 #define NYANVDD_CAP_RT_GPU_PRIORITY 0x00000002u // OS IddCx >= 1.9: realtime GPU priority applied
 #define NYANVDD_CAP_PRECISE_DIRTY   0x00000004u // retired, see above
 #define NYANVDD_CAP_SHARED_CAPTURE  0x00000008u // v4, elevated diagnostics only
+#define NYANVDD_CAP_RENDER_ADAPTER  0x00000010u // v5, explicit adapter preference + observation
 
 // AdapterState: PLUG returns ERROR_NOT_READY both while the adapter is still
 // coming up and when it failed for good, so this is how a client tells a race
@@ -185,6 +190,24 @@ typedef struct NYANVDD_STATUS_OUT {
     UINT32 WatchdogTimeoutMs; // 0 = watchdog disarmed
     UINT32 AdapterState;    // NYANVDD_ADAPTER_STATE_* (was Reserved in v1)
 } NYANVDD_STATUS_OUT;
+
+// Preference applies to this running driver instance only. {0,0} restores OS
+// choice. The OS may select another adapter, so verify ActualAdapter per cookie.
+// A zero actual LUID means no accepted swap-chain is currently assigned.
+typedef struct NYANVDD_RENDER_ADAPTER_IN {
+    LUID PreferredAdapter;
+} NYANVDD_RENDER_ADAPTER_IN;
+
+typedef struct NYANVDD_MONITOR_RENDER_ADAPTER {
+    UINT32 Cookie;
+    LUID ActualAdapter;
+} NYANVDD_MONITOR_RENDER_ADAPTER;
+
+typedef struct NYANVDD_RENDER_ADAPTER_OUT {
+    LUID PreferredAdapter;
+    UINT32 Count;
+    NYANVDD_MONITOR_RENDER_ADAPTER Monitors[NYANVDD_MAX_MONITORS];
+} NYANVDD_RENDER_ADAPTER_OUT;
 
 // Plug flags.
 #define NYANVDD_PLUG_FLAG_HDR10 0x00000001u // report 10-bit capability for this monitor (needs CAP_HDR10_READY)

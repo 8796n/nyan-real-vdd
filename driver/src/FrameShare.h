@@ -31,6 +31,8 @@ struct FrameChannel {
 struct CaptureBinding {
     // Access only through atomic_load/atomic_store for shared_ptr.
     std::shared_ptr<FrameChannel> Channel;
+    // Observed swap-chain adapter, independently of optional frame sharing.
+    std::atomic<UINT64> ActualRenderAdapter{0};
 };
 
 class FramePublisher {

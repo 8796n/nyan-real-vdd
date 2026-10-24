@@ -138,6 +138,8 @@ namespace nyan
             void List(_Out_ NYANVDD_LIST_OUT* Out);
             NTSTATUS OpenCapture(UINT32 Cookie, WDFFILEOBJECT Owner, NYANVDD_CAPTURE_OUT* Out);
             void CloseCapture(WDFFILEOBJECT Owner);
+            NTSTATUS SetRenderAdapter(LUID Adapter);
+            void GetRenderAdapter(NYANVDD_RENDER_ADAPTER_OUT* Out);
 
             // Records which monitors the OS is actually driving, from the
             // committed display paths. Monitors absent from the list are
@@ -173,6 +175,8 @@ namespace nyan
             bool m_AdapterInitStarted = false;
 
             std::mutex m_Lock;
+            std::mutex m_RenderAdapterLock;
+            LUID m_PreferredRenderAdapter = {};
             MonitorSlot m_Slots[NYANVDD_MAX_MONITORS];
 
             // Watchdog (disarmed unless a client arms it).

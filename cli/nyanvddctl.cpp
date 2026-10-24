@@ -10,6 +10,8 @@
 #include <cfgmgr32.h>
 #include <devpkey.h>
 #include <wtsapi32.h>
+#include <dxgi1_4.h>
+#include <wrl/client.h>
 
 #include <cstdio>
 #include <cwchar>
@@ -23,6 +25,7 @@
 #pragma comment(lib, "cfgmgr32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "wtsapi32.lib")
+#pragma comment(lib, "dxgi.lib")
 
 namespace
 {
@@ -41,7 +44,11 @@ namespace
             L"                                   plug a monitor (default 1920x1080@60)\n"
             L"  nyanvddctl unplug <cookie|all>   unplug one monitor (hex ok: 0x...) or all\n"
             L"  nyanvddctl watchdog <ms|off>     arm/disarm the liveness watchdog (>=10000)\n"
-            L"  nyanvddctl resolve               map each cookie to its OS display\n");
+            L"  nyanvddctl resolve               map each cookie to its OS display\n"
+            L"  nyanvddctl gpu-list              list adapter LUIDs and names\n"
+            L"  nyanvddctl render-adapter        show preferred and actual adapters\n"
+            L"  nyanvddctl render-adapter <auto|HIGH:LOW>\n"
+            L"                                   set volatile preference (hex LUID)\n");
     }
 
     // ---- device node management (SwDeviceCreate) ----
@@ -460,6 +467,65 @@ namespace
         return Missing == 0 ? 0 : 2;
     }
 
+    std::wstring AdapterName(LUID Luid)
+    {
+        if (!Luid.HighPart && !Luid.LowPart) return L"OS choice / unassigned";
+        Microsoft::WRL::ComPtr<IDXGIFactory4> Factory;
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> Adapter;
+        DXGI_ADAPTER_DESC1 Desc = {};
+        if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&Factory))) ||
+            FAILED(Factory->EnumAdapterByLuid(Luid, IID_PPV_ARGS(&Adapter))) ||
+            FAILED(Adapter->GetDesc1(&Desc))) return L"unavailable";
+        return Desc.Description;
+    }
+
+    int CmdGpuList()
+    {
+        Microsoft::WRL::ComPtr<IDXGIFactory1> Factory;
+        if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&Factory)))) return 1;
+        for (UINT i = 0;; ++i) {
+            Microsoft::WRL::ComPtr<IDXGIAdapter1> Adapter;
+            const HRESULT Hr = Factory->EnumAdapters1(i, &Adapter);
+            if (Hr == DXGI_ERROR_NOT_FOUND) break;
+            if (FAILED(Hr)) return 1;
+            DXGI_ADAPTER_DESC1 Desc = {};
+            if (FAILED(Adapter->GetDesc1(&Desc))) return 1;
+            wprintf(L"%08X:%08X  %s%s\n", static_cast<UINT32>(Desc.AdapterLuid.HighPart),
+                    Desc.AdapterLuid.LowPart, Desc.Description,
+                    (Desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? L" [software]" : L"");
+        }
+        return 0;
+    }
+
+    int CmdRenderAdapter(HANDLE Device, const wchar_t* Choice)
+    {
+        if (Choice) {
+            NYANVDD_RENDER_ADAPTER_IN In = {};
+            if (wcscmp(Choice, L"auto") != 0) {
+                wchar_t* End = nullptr;
+                const auto High = wcstoull(Choice, &End, 16);
+                if (End == Choice || *End != L':' || High > MAXDWORD) return 2;
+                const wchar_t* LowStart = End + 1;
+                const auto Low = wcstoull(LowStart, &End, 16);
+                if (End == LowStart || *End || Low > MAXDWORD) return 2;
+                In.PreferredAdapter = {static_cast<DWORD>(Low), static_cast<LONG>(High)};
+            }
+            if (!Ioctl(Device, IOCTL_NYANVDD_SET_RENDER_ADAPTER, &In, sizeof(In), nullptr, 0)) return 1;
+        }
+        NYANVDD_RENDER_ADAPTER_OUT Out = {};
+        if (!Ioctl(Device, IOCTL_NYANVDD_GET_RENDER_ADAPTER, nullptr, 0, &Out, sizeof(Out))) return 1;
+        if (Out.Count > NYANVDD_MAX_MONITORS) return 1;
+        wprintf(L"preferred: %08X:%08X  %s\n", static_cast<UINT32>(Out.PreferredAdapter.HighPart),
+                Out.PreferredAdapter.LowPart, AdapterName(Out.PreferredAdapter).c_str());
+        for (UINT i = 0; i < Out.Count; ++i) {
+            const auto& M = Out.Monitors[i];
+            wprintf(L"cookie 0x%08X actual: %08X:%08X  %s\n", M.Cookie,
+                    static_cast<UINT32>(M.ActualAdapter.HighPart), M.ActualAdapter.LowPart,
+                    AdapterName(M.ActualAdapter).c_str());
+        }
+        return 0;
+    }
+
     int CmdStatus(HANDLE Device)
     {
         NYANVDD_STATUS_OUT Status = {};
@@ -476,11 +542,12 @@ namespace
             Status.AdapterState == NYANVDD_ADAPTER_STATE_FAILED ? L"FAILED (IddCx refused the adapter)" :
             L"starting";
         wprintf(L"adapter    : %s\n", State);
-        wprintf(L"caps       :%s%s%s%s%s\n",
+        wprintf(L"caps       :%s%s%s%s%s%s\n",
                 (Status.CapFlags & NYANVDD_CAP_HDR10_READY) ? L" hdr10-ready" : L"",
                 (Status.CapFlags & NYANVDD_CAP_RT_GPU_PRIORITY) ? L" rt-gpu-priority" : L"",
                 (Status.CapFlags & NYANVDD_CAP_PRECISE_DIRTY) ? L" precise-dirty" : L"",
                 (Status.CapFlags & NYANVDD_CAP_SHARED_CAPTURE) ? L" shared-capture(admin)" : L"",
+                (Status.CapFlags & NYANVDD_CAP_RENDER_ADAPTER) ? L" render-adapter" : L"",
                 (Status.CapFlags == 0) ? L" (none)" : L"");
         wprintf(L"watchdog   : %s (%u ms)\n", Status.WatchdogTimeoutMs ? L"armed" : L"off",
                 Status.WatchdogTimeoutMs);
@@ -627,6 +694,8 @@ int wmain(int argc, wchar_t** argv)
 
     const wchar_t* Cmd = argv[1];
 
+    if (wcscmp(Cmd, L"gpu-list") == 0 && argc == 2) return CmdGpuList();
+
     if (wcscmp(Cmd, L"install-device") == 0)
     {
         int Result = SetDeviceLifetime(SWDeviceLifetimeParentPresent);
@@ -685,6 +754,10 @@ int wmain(int argc, wchar_t** argv)
     else if (wcscmp(Cmd, L"resolve") == 0)
     {
         Result = CmdResolve(Device);
+    }
+    else if (wcscmp(Cmd, L"render-adapter") == 0 && argc <= 3)
+    {
+        Result = CmdRenderAdapter(Device, argc == 3 ? argv[2] : nullptr);
     }
     else if (wcscmp(Cmd, L"plug") == 0)
     {

@@ -1227,7 +1227,7 @@ void IndirectDeviceContext::FillStatus(NYANVDD_STATUS_OUT* Out)
 
     lock_guard<mutex> Guard(m_Lock);
     Out->IddCxOsVersion = m_OsVersion;
-    Out->CapFlags = m_CapFlags | NYANVDD_CAP_SHARED_CAPTURE;
+    Out->CapFlags = m_CapFlags | NYANVDD_CAP_SHARED_CAPTURE | NYANVDD_CAP_RENDER_ADAPTER;
     Out->WatchdogTimeoutMs = m_WatchdogTimeoutMs;
     Out->AdapterState = m_AdapterState;
     for (UINT i = 0; i < NYANVDD_MAX_MONITORS; ++i)
@@ -1236,6 +1236,55 @@ void IndirectDeviceContext::FillStatus(NYANVDD_STATUS_OUT* Out)
         {
             Out->MonitorCount++;
         }
+    }
+}
+
+NTSTATUS IndirectDeviceContext::SetRenderAdapter(LUID Adapter)
+{
+    // Reject unavailable/software endpoints before asking IddCx to rebuild any
+    // chains. This is a preference, not proof of the OS's final selection.
+    if (Adapter.HighPart || Adapter.LowPart) {
+        ComPtr<IDXGIFactory4> Factory;
+        ComPtr<IDXGIAdapter1> Gpu;
+        DXGI_ADAPTER_DESC1 Desc = {};
+        if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&Factory))) ||
+            FAILED(Factory->EnumAdapterByLuid(Adapter, IID_PPV_ARGS(&Gpu))) ||
+            FAILED(Gpu->GetDesc1(&Desc)) || (Desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
+            return STATUS_INVALID_PARAMETER;
+    }
+    lock_guard<mutex> RequestGuard(m_RenderAdapterLock);
+    IDDCX_ADAPTER Object = nullptr;
+    {
+        lock_guard<mutex> Guard(m_Lock);
+        if (!m_AdapterReady) return STATUS_DEVICE_NOT_READY;
+        if (m_PreferredRenderAdapter.HighPart == Adapter.HighPart &&
+            m_PreferredRenderAdapter.LowPart == Adapter.LowPart) return STATUS_SUCCESS;
+        Object = m_Adapter;
+    }
+    IDARG_IN_ADAPTERSETRENDERADAPTER Args = {};
+    Args.PreferredRenderAdapter = Adapter;
+    // IddCx can re-enter monitor callbacks. Never hold the slot-table lock here.
+    IddCxAdapterSetRenderAdapter(Object, &Args);
+    {
+        lock_guard<mutex> Guard(m_Lock);
+        m_PreferredRenderAdapter = Adapter;
+    }
+    NYVDD_LOG(L"Render adapter preference set to %08X:%08X (zero = OS choice)",
+              static_cast<UINT32>(Adapter.HighPart), Adapter.LowPart);
+    return STATUS_SUCCESS;
+}
+
+void IndirectDeviceContext::GetRenderAdapter(NYANVDD_RENDER_ADAPTER_OUT* Out)
+{
+    memset(Out, 0, sizeof(*Out));
+    lock_guard<mutex> Guard(m_Lock);
+    Out->PreferredAdapter = m_PreferredRenderAdapter;
+    for (const auto& Slot : m_Slots) {
+        if (!Slot.Used || !Slot.Arrived) continue;
+        auto& Monitor = Out->Monitors[Out->Count++];
+        Monitor.Cookie = Slot.Params.Cookie;
+        const UINT64 Actual = Slot.Capture->ActualRenderAdapter.load();
+        Monitor.ActualAdapter = {static_cast<DWORD>(Actual), static_cast<LONG>(Actual >> 32)};
     }
 }
 
@@ -1436,6 +1485,11 @@ NTSTATUS IndirectMonitorContext::AssignSwapChain(IDDCX_SWAPCHAIN SwapChain, LUID
             {
                 m_ProcessingThread = Processor;
                 Processor->Commit();
+                m_Capture->ActualRenderAdapter.store(
+                    (static_cast<UINT64>(static_cast<UINT32>(RenderAdapter.HighPart)) << 32) |
+                    RenderAdapter.LowPart);
+                NYVDD_LOG(L"Accepted swap-chain on render adapter %08X:%08X",
+                          static_cast<UINT32>(RenderAdapter.HighPart), RenderAdapter.LowPart);
             }
         }
     }
@@ -1476,6 +1530,7 @@ void IndirectMonitorContext::UnassignSwapChain()
         lock_guard<mutex> Guard(m_Lock);
         Processor = m_ProcessingThread;
         m_ProcessingThread = nullptr;
+        m_Capture->ActualRenderAdapter.store(0);
     }
     if (Processor)
     {
@@ -1786,6 +1841,25 @@ void NyanVddIoDeviceControl(WDFDEVICE Device, WDFREQUEST Request, size_t OutputB
 
     switch (IoControlCode)
     {
+    case IOCTL_NYANVDD_SET_RENDER_ADAPTER:
+    {
+        NYANVDD_RENDER_ADAPTER_IN* In = nullptr;
+        Status = WdfRequestRetrieveInputBuffer(Request, sizeof(*In), (PVOID*)&In, nullptr);
+        // Same control-plane access as PLUG/UNPLUG. This changes routing only;
+        // unlike OPEN_CAPTURE it never exposes another session's image data.
+        if (NT_SUCCESS(Status)) Status = Context->SetRenderAdapter(In->PreferredAdapter);
+        break;
+    }
+    case IOCTL_NYANVDD_GET_RENDER_ADAPTER:
+    {
+        NYANVDD_RENDER_ADAPTER_OUT* Out = nullptr;
+        Status = WdfRequestRetrieveOutputBuffer(Request, sizeof(*Out), (PVOID*)&Out, nullptr);
+        if (NT_SUCCESS(Status)) {
+            Context->GetRenderAdapter(Out);
+            Information = sizeof(*Out);
+        }
+        break;
+    }
     case IOCTL_NYANVDD_OPEN_CAPTURE:
     {
         NYANVDD_CAPTURE_IN* In = nullptr;
