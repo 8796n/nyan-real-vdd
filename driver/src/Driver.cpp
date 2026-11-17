@@ -540,6 +540,18 @@ void SwapChainProcessor::Stop()
             return;
         }
     }
+
+    // Processing (or already past it): only the worker touches the swap-chain
+    // and releases it on its way out. Wait for that, as the Microsoft sample
+    // does, before the callback returns: IddCx may then destroy the monitor and
+    // its child swap-chain, and a WdfObjectDelete arriving later from the
+    // worker touches a freed object (a WUDFHost access violation in
+    // DeleteSwapChainOnce when a monitor departed while its chain was being
+    // processed). RunCore notices the terminate event within one 16 ms wait.
+    if (m_hThread && GetThreadId(m_hThread) != GetCurrentThreadId())
+    {
+        WaitForSingleObject(m_hThread, INFINITE);
+    }
 }
 
 void SwapChainProcessor::AddRef()
